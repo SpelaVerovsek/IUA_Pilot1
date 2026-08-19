@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Barcelona OD Routes</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="bcn-eubucco.js"></script>
+  <script src="bcn-network.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: sans-serif; background: #f5f5f5; margin: 0; padding: 0; }
+    
+    .leaflet-pane {
+      pointer-events: auto !important;
+    }
+    
+    .leaflet-marker-pane {
+      pointer-events: auto !important;
+    }
+    
+    .marker-icon {
+      cursor: grab !important;
+      pointer-events: auto !important;
+    }
+    
+    .marker-icon:active {
+      cursor: grabbing !important;
+    }
+    
+    .origin-icon {
+      cursor: grab !important;
+      pointer-events: auto !important;
+    }
+    
+    .origin-icon:active {
+      cursor: grabbing !important;
+    }
+    .container { display: grid; grid-template-columns: 280px 1fr; height: 100vh; }
+    .sidebar { background: white; padding: 1.5rem; overflow-y: auto; border-right: 1px solid #ddd; }
+    .map { position: relative; }
+    label { font-size: 13px; color: #666; margin: 0.5rem 0; display: block; font-weight: 500; }
+    input, select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="sidebar">
+      <h1>Barcelona OD Routes</h1>
+      
+      <label>Display mode:</label>
+      <button id="modeToggle" style="width: 100%; padding: 8px; background: #d9534f; color: white; border: none; border-radius: 4px; cursor: pointer; margin-bottom: 1rem; font-weight: bold;">Basemap + Thematic Layers</button>
+      <label>Map opacity:</label>
+      <input type="range" id="mapOpacity" min="0.2" max="1" step="0.1" value="1" style="margin-bottom: 0.3rem;">
+      <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="opacity-val">100</span>%</div>
+
+      <label>Grid circles:</label>
+      <input type="range" id="circles" min="2" max="8" value="5" style="margin-bottom: 0.3rem;">
+      <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="circles-val">5</span> rings</div>
+
+      <label>Grid sectors:</label>
+      <input type="range" id="sectors" min="8" max="24" step="2" value="16" style="margin-bottom: 0.3rem;">
+      <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="sectors-val">16</span> divisions</div>
+
+      <label>Scale (km):</label>
+      <input type="range" id="scale" min="2" max="20" value="10" style="margin-bottom: 0.3rem;">
+      <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="scale-val">10</span> km</div>
+
+      <label>Rotation:</label>
+      <input type="range" id="rotation" min="0" max="360" value="0" style="margin-bottom: 0.3rem;">
+      <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="rotation-val">0</span>°</div>
+
+      <label>Grid center:</label>
+      <button id="setGridCenterBtn" style="width: 100%; padding: 8px; background: #d9534f; color: white; border: none; border-radius: 4px; cursor: pointer; margin-bottom: 1rem; font-weight: bold;">Click Map to Set Center</button>
+      <button id="resetDestinationsBtn" style="width: 100%; padding: 8px; background: #27ae60; color: white; border: none; border-radius: 4px; cursor: pointer; margin-bottom: 1rem; font-weight: bold;">Reset All (Origin + Routes)</button>
+      <div style="font-size: 12px; color: #999; margin-bottom: 1rem; padding: 8px; background: #f9f9f9; border-radius: 4px;">
+        <strong>Current:</strong> <span id="gridCenterDisplay">Origin</span>
+      </div>
+    </div>
+
+    <div class="map" id="map"></div>
+  </div>
+
+  <script>
+    // Data
+    const origin = { lat: 41.35716798139434, lng: 2.117563816738617 };
+    const originalOrigin = { lat: origin.lat, lng: origin.lng };
+    const destinations = [
+        { lat: 41.39349087656098, lng: 2.10433505742488 },
+        { lat: 41.408040663675, lng: 2.1303669186088214 },
+        { lat: 41.43675127674807, lng: 2.1563230940783074 },
+        { lat: 41.4136338394865, lng: 2.161673645629887 },
+        { lat: 41.3862416257098, lng: 2.1702158036387065 },
+        { lat: 41.467719076696895, lng: 2.1807657070312336 },
+        { lat: 41.409522931575275, lng: 2.1834160690307414 },
+        { lat: 41.407152128413905, lng: 2.2119741035461615 },
+        { lat: 41.36567409964743, lng: 2.1555097729964245 }
+      ];
+    
+    // Store original coordinates for reset
+    const originalDestinations = destinations.map(d => ({...d}));
+
+    // Map
+    const map = L.map('map').setView([origin.lat, origin.lng], 13);
+
+    // Basemaps - all at full 1.0 opacity, NO hidden transparency
+    const map1 = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+      attribution: '© CartoDB'
+    });
+    
+    const map2 = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+      attribution: '© Esri Street'
+    });
+    
+    const map3 = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenTopoMap'
+    });
+    
+    const map4 = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', {
+      attribution: '© Esri World Topo'
+    });
+
+    // EUBUCCO buildings placeholder - will be loaded
+    const eubuccoLayer = L.layerGroup();
+
+    const baseMaps = {
+      'Light': map1,
+      'Street': map2,
+      'OpenTopo': map3,
+      'World Topo': map4
+    };
+
+    map1.addTo(map);
+    
+    // Overlays layer (can be shown with any basemap)
+    const lppLayer = L.layerGroup();
+    const overlayMaps = {
+      'EUBUCCO Buildings': eubuccoLayer,
+      'LPP Network': lppLayer
+    };
+    
+    const layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+    // Load EUBUCCO buildings - uniform yellow color
+    if (typeof eubuccoData !== 'undefined') {
+      const geoJsonLayer = L.geoJSON(eubuccoData, {
+        style: {
+          color: '#f39c12',
+          weight: 0.5,
+          opacity: 0.9,
+          fillOpacity: 0.7
+        },
+        onEachFeature: (feature, layer) => {
+          layer.bindPopup(`Building<br>H:${feature.properties.height ? feature.properties.height.toFixed(1) : '?'}m`);
+        }
+      });
+      geoJsonLayer.addTo(eubuccoLayer);
+    }
+
+    // Load LPP network from embedded data
+    if (typeof lppNetworkData !== 'undefined') {
+      const lppGeoJson = L.geoJSON(lppNetworkData, {
+        style: {
+          color: '#e74c3c',
+          weight: 2.5,
+          opacity: 0.8,
+          dashArray: '5,3'
+        },
+        onEachFeature: (feature, layer) => {
+          layer.bindPopup(`${feature.properties.name}`);
+        }
+      });
+      lppGeoJson.addTo(lppLayer);
+    }
+
+    // Dark background for night mode
+    const darkBg = L.rectangle([[-90, -180], [90, 180]], {
+      color: '#1a1a1a',
+      weight: 0,
+      fillColor: '#1a1a1a',
+      fillOpacity: 1,
+      pane: 'mapPane',
+      className: 'dark-bg'
+    });
+    
+    // Mode toggle functionality
+    let nightMode = false;
+    const modeToggle = document.getElementById('modeToggle');
+    
+    modeToggle.addEventListener('click', () => {
+      nightMode = !nightMode;
+      if (nightMode) {
+        // Content only mode - hide all basemaps, show dark bg
+        map.removeLayer(map1);
+        map.removeLayer(map2);
+        map.removeLayer(map3);
+        map.removeLayer(map4);
+        darkBg.addTo(map);
+        darkBg.bringToBack();
+        modeToggle.textContent = 'Thematic Layers Only';
+        modeToggle.style.background = '#34495e';
+      } else {
+        // Basemap + Content mode
+        darkBg.remove();
+        map1.addTo(map);
+        modeToggle.textContent = 'Basemap + Thematic Layers';
+        modeToggle.style.background = '#d9534f';
+      }
+    });
+
+    // Create panes
+    const gridPane = map.createPane('grid');
+    gridPane.style.zIndex = 250;
+    const routePane = map.createPane('routes');
+    routePane.style.zIndex = 400;
+    const markerPane = map.createPane('markers');
+    markerPane.style.zIndex = 600;
+
+    // Controls
+    const circlesInput = document.getElementById('circles');
+    const sectorsInput = document.getElementById('sectors');
+    const scaleInput = document.getElementById('scale');
+    const rotationInput = document.getElementById('rotation');
+    const mapOpacityInput = document.getElementById('mapOpacity');
+
+    // Store all basemaps for opacity control
+    const allBasemaps = [map1, map2, map3, map4];
+
+    // Grid center state
+    let gridCenter = { ...origin };
+    let selectingGridCenter = false;
+    let tempMarker = null;
+
+    const setGridCenterBtn = document.getElementById('setGridCenterBtn');
+    const resetDestinationsBtn = document.getElementById('resetDestinationsBtn');
+    const gridCenterDisplay = document.getElementById('gridCenterDisplay');
+
+    // Toggle grid center selection mode
+    setGridCenterBtn.addEventListener('click', () => {
+      selectingGridCenter = !selectingGridCenter;
+      if (selectingGridCenter) {
+        setGridCenterBtn.textContent = 'Click on map to place center...';
+        setGridCenterBtn.style.background = '#666';
+        setGridCenterBtn.style.outline = 'none';
+        map.style.cursor = 'crosshair';
+        map.dragging.disable();
+      } else {
+        setGridCenterBtn.textContent = 'Click Map to Set Center';
+        setGridCenterBtn.style.background = '#d9534f';
+        setGridCenterBtn.style.outline = 'none';
+        map.style.cursor = 'grab';
+        map.dragging.enable();
+        if (tempMarker) {
+          markerGroup.removeLayer(tempMarker);
+          tempMarker = null;
+        }
+      }
+    });
+
+    // Handle map clicks for grid center
+    map.on('click', (e) => {
+      if (selectingGridCenter) {
+        gridCenter = { lat: e.latlng.lat, lng: e.latlng.lng };
+        
+        if (tempMarker) {
+          markerGroup.removeLayer(tempMarker);
+        }
+        tempMarker = L.marker(gridCenter, {
+          icon: L.divIcon({
+            html: `<div style="width:20px;height:20px;background:#ffc107;border:2px solid white;border-radius:50%;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div>`,
+            iconSize: [20, 20],
+            iconAnchor: [10, 10]
+          })
+        }).addTo(markerGroup);
+
+        gridCenterDisplay.textContent = `${gridCenter.lat.toFixed(4)}°, ${gridCenter.lng.toFixed(4)}°`;
+        
+        update();
+      }
+    });
+
+    // Reset destinations to original coordinates
+    resetDestinationsBtn.addEventListener('click', () => {
+      origin.lat = originalOrigin.lat;
+      origin.lng = originalOrigin.lng;
+      for (let i = 0; i < destinations.length; i++) {
+        destinations[i].lat = originalDestinations[i].lat;
+        destinations[i].lng = originalDestinations[i].lng;
+      }
+      update();
+    });
+
+    // Groups
+    const gridGroup = L.layerGroup().addTo(map);
+    const routeGroup = L.layerGroup().addTo(map);
+    const markerGroup = L.layerGroup().addTo(map);
+
+    // Draw grid
+    function drawGrid() {
+      gridGroup.clearLayers();
+      
+      const circles = parseInt(circlesInput.value);
+      const sectors = parseInt(sectorsInput.value);
+      const scaleKm = parseInt(scaleInput.value);
+      const rotation = parseInt(rotationInput.value);
+
+      // Circles
+      for (let i = 1; i <= circles; i++) {
+        L.circle(gridCenter, {
+          radius: (scaleKm / circles) * i * 1000,
+          fill: false,
+          color: '#222',
+          weight: 1,
+          dashArray: '4,4',
+          pane: 'grid'
+        }).addTo(gridGroup);
+      }
+
+      // Radial lines
+      for (let i = 0; i < sectors; i++) {
+        const angle = (360 / sectors) * i + rotation;
+        const rad = angle * Math.PI / 180;
+        const dist = scaleKm / 111;
+        const destLat = gridCenter.lat + dist * Math.cos(rad);
+        const destLng = gridCenter.lng + dist / Math.cos(gridCenter.lat * Math.PI / 180) * Math.sin(rad);
+        
+        L.polyline([gridCenter, { lat: destLat, lng: destLng }], {
+          color: '#444',
+          weight: 0.7,
+          dashArray: '3,3',
+          pane: 'grid'
+        }).addTo(gridGroup);
+      }
+    }
+
+    // Draw routes
+    function drawRoutes() {
+      routeGroup.clearLayers();
+      
+      destinations.forEach((dest, idx) => {
+        L.polyline([origin, dest], {
+          color: '#d9534f',
+          weight: 3,
+          opacity: 0.8,
+          pane: 'routes'
+        }).addTo(routeGroup);
+      });
+    }
+
+    // Draw markers
+    function drawMarkers() {
+      markerGroup.clearLayers();
+      
+      destinations.forEach((dest, idx) => {
+        const icon = L.divIcon({
+          html: `<div style="width:16px;height:16px;display:flex;align-items:center;justify-content:center;background:#d9534f;color:white;border-radius:50%;font-weight:bold;font-size:9px;border:1px solid white;box-shadow:0 2px 3px rgba(0,0,0,0.3);pointer-events:auto;cursor:grab;">${idx + 1}</div>`,
+          iconSize: [16, 16],
+          iconAnchor: [8, 8],
+          className: 'marker-icon',
+          popupAnchor: [0, -10]
+        });
+        
+        const marker = L.marker(dest, { icon: icon, pane: 'markers', draggable: true }).addTo(markerGroup);
+        
+        // Update destination when dragged - only redraw routes, not markers
+        marker.on('drag', () => {
+          const pos = marker.getLatLng();
+          destinations[idx].lat = pos.lat;
+          destinations[idx].lng = pos.lng;
+          drawRoutes();
+          drawGrid();
+        });
+        
+        marker.on('dragend', () => {
+          const pos = marker.getLatLng();
+          destinations[idx].lat = pos.lat;
+          destinations[idx].lng = pos.lng;
+          drawRoutes();
+        });
+      });
+
+      const originIcon = L.divIcon({
+        html: `<div style="width:8px;height:8px;background:#d9534f;border-radius:50%;border:1px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.3);pointer-events:auto;cursor:grab;"></div>`,
+        iconSize: [8, 8],
+        iconAnchor: [4, 4],
+        className: 'origin-icon',
+        popupAnchor: [0, -5]
+      });
+      
+      const originMarker = L.marker(origin, { icon: originIcon, pane: 'markers', draggable: true }).addTo(markerGroup);
+      
+      // Update routes when origin is dragged
+      originMarker.on('drag', () => {
+        const pos = originMarker.getLatLng();
+        origin.lat = pos.lat;
+        origin.lng = pos.lng;
+        drawRoutes();
+        drawGrid();
+      });
+      
+      originMarker.on('dragend', () => {
+        const pos = originMarker.getLatLng();
+        origin.lat = pos.lat;
+        origin.lng = pos.lng;
+        drawRoutes();
+      });
+    }
+
+    // Update
+    function update() {
+      drawGrid();
+      drawRoutes();
+      drawMarkers();
+      
+      document.getElementById('circles-val').textContent = circlesInput.value;
+      document.getElementById('sectors-val').textContent = sectorsInput.value;
+      document.getElementById('scale-val').textContent = scaleInput.value;
+      document.getElementById('rotation-val').textContent = rotationInput.value;
+    }
+
+    // Listeners
+    circlesInput.addEventListener('input', update);
+    sectorsInput.addEventListener('input', update);
+    scaleInput.addEventListener('input', update);
+    rotationInput.addEventListener('input', update);
+    
+    mapOpacityInput.addEventListener('input', () => {
+      const opacity = parseFloat(mapOpacityInput.value);
+      allBasemaps.forEach(layer => {
+        layer.setOpacity(opacity);
+      });
+      document.getElementById('opacity-val').textContent = Math.round(opacity * 100);
+    });
+    
+    map.on('zoom', update);
+    map.on('move', update);
+
+    // Init
+    gridCenterDisplay.textContent = `${gridCenter.lat.toFixed(4)}°, ${gridCenter.lng.toFixed(4)}°`;
+    update();
+  </script>
+</body>
+</html>
