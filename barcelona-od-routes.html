@@ -144,7 +144,7 @@
 
     // Load EUBUCCO buildings - uniform yellow color
     if (typeof eubuccoData !== 'undefined') {
-      const geoJsonLayer = L.geoJSON(eubuccoData, {
+      const geoJsonLayer = L.geoJSON(bcnEubuccoDataFull, {
         style: {
           color: '#f39c12',
           weight: 0.5,
