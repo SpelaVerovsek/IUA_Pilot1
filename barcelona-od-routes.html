@@ -6,7 +6,7 @@
   <title>Barcelona OD Routes</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script src="bcn-eubucco.js"></script>
+  <script src="https://lucky-cocada-a18fda.netlify.app/bcn-eubucco-full.js"></script>
   <script src="bcn-network.js"></script>
   <style>
     * { box-sizing: border-box; }
@@ -143,7 +143,7 @@
     const layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
 
     // Load EUBUCCO buildings - uniform yellow color
-    if (typeof eubuccoData !== 'undefined') {
+    if (typeof bcnEubuccoDataFull !== 'undefined') {
       const geoJsonLayer = L.geoJSON(bcnEubuccoDataFull, {
         style: {
           color: '#f39c12',
