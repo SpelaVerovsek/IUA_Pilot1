@@ -142,8 +142,8 @@
     const layerControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
 
     // Load EUBUCCO buildings - uniform yellow color
-    if (typeof bcnEubuccoDataFull !== 'undefined') {
-      const geoJsonLayer = L.geoJSON(bcnEubuccoDataFull, {
+      if (typeof bcnEubuccoData !== 'undefined') {
+  const geoJsonLayer = L.geoJSON(bcnEubuccoData, {
         style: {
           color: '#f39c12',
           weight: 0.5,
@@ -439,6 +439,6 @@
     gridCenterDisplay.textContent = `${gridCenter.lat.toFixed(4)}°, ${gridCenter.lng.toFixed(4)}°`;
     update();
   </script>
-  <script src="https://lucky-cocada-a18fda.netlify.app/bcn-eubucco-full.js"></script>
+<script src="bcn-eubucco.js"></script>
 </body>
 </html>
