@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OD Routes</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <!-- Data files. Script tags bypass the CORS rule that blocks fetch() on file://. -->
+  <script src="linies_metro.js"></script>
+  <script src="estacions.js"></script>
+  <script src="bcn-eubucco.js"></script>
+  <script src="eubucco-data.js"></script>
+  <script src="lpp-lines.js"></script>
+  <script src="lpp-stops.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body { font-family: sans-serif; background: #f5f5f5; }
+
+    .app { display: flex; flex-direction: column; height: 100vh; }
+
+    .tab-bar { display: flex; align-items: stretch; background: #b0b0b0; flex: 0 0 auto; }
+    .tab-btn {
+      padding: 14px 28px; margin: 0; background: #b0b0b0; color: #555; border: none;
+      cursor: pointer; font-weight: bold; font-size: 14px; line-height: 1;
+    }
+    .tab-btn.active { background: #d9534f; color: white; }
+    .tab-btn:hover:not(.active) { background: #9e9e9e; color: #2a2a2a; }
+
+    .tab-panels { flex: 1; position: relative; overflow: hidden; }
+    .tab-panel { position: absolute; inset: 0; display: none; }
+    .tab-panel.active { display: block; }
+
+    .container { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
+    .sidebar { background: white; padding: 1.5rem; overflow-y: auto; border-right: 1px solid #ddd; }
+    .map { position: relative; height: 100%; }
+    label { font-size: 13px; color: #666; margin: 0.5rem 0; display: block; font-weight: 500; }
+    input, select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 1rem; }
+    .loading-note { font-size: 11px; color: #999; margin-bottom: 1rem; padding: 6px; background: #f0f0f0; border-radius: 3px; }
+    button { width: 100%; padding: 8px; border: none; border-radius: 4px; cursor: pointer; margin-bottom: 1rem; font-weight: bold; color: white; }
+    button.primary { background: #d9534f; }
+    button.success { background: #27ae60; }
+
+    /* Kill Leaflet's default divIcon white box + grey border */
+    .leaflet-div-icon,
+    .marker-icon,
+    .origin-icon,
+    .center-icon {
+      background: transparent !important;
+      border: none !important;
+    }
+    .marker-icon, .origin-icon { cursor: grab !important; }
+    .marker-icon:active, .origin-icon:active { cursor: grabbing !important; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="bcn">Barcelona</button>
+      <button class="tab-btn" data-tab="lj">Ljubljana</button>
+    </div>
+
+    <div class="tab-panels">
+      <!-- ============ BARCELONA PANEL ============ -->
+      <div id="panel-bcn" class="tab-panel active">
+        <div class="container">
+          <div class="sidebar">
+            <h1>Barcelona OD Routes</h1>
+
+            <label>Display mode:</label>
+            <button id="bcn-modeToggle" class="primary">Basemap + Thematic Layers</button>
+
+            <label>Map opacity:</label>
+            <input type="range" id="bcn-mapOpacity" min="0.2" max="1" step="0.1" value="1" style="margin-bottom: 0.3rem;">
+            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="bcn-opacity-val">100</span>%</div>
+
+            <label>Grid circles:</label>
+            <input type="range" id="bcn-circles" min="2" max="8" value="3" style="margin-bottom: 0.3rem;">
+            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="bcn-circles-val">3</span> rings</div>
+
+            <label>Grid sectors:</label>
+            <input type="range" id="bcn-sectors" min="8" max="24" step="2" value="12" style="margin-bottom: 0.3rem;">
+            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="bcn-sectors-val">12</span> divisions</div>
+
+            <label>Scale (km):</label>
+            <input type="range" id="bcn-scale" min="2" max="20" value="10" style="margin-bottom: 0.3rem;">
+            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="bcn-scale-val">10</span> km</div>
+
+            <label>Rotation:</label>
+            <input type="range" id="bcn-rotation" min="0" max="360" value="0" style="margin-bottom: 0.3rem;">
+            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="bcn-rotation-val">0</span>°</div>
+
+            <label>Grid center:</label>
+            <button id="bcn-setGridCenterBtn" class="primary">Click Map to Set Center</button>
+            <button id="bcn-resetDestinationsBtn" class="success">Reset All (Origin + Routes)</button>
+            <div style="font-size: 12px; color: #999; margin-bottom: 1rem; padding: 8px; background: #f9f9f9; border-radius: 4px;">
+              <strong>Current:</strong> <span id="bcn-gridCenterDisplay">Origin</span>
+            </div>
+
+            <div class="loading-note" id="bcn-loadingStatus">Loading data...</div>
+          </div>
+          <div class="map" id="bcn-map"></div>
+        </div>
+      </div>
+
+      <!-- ============ LJUBLJANA PANEL ============ -->
+      <div id="panel-lj" class="tab-panel">
+        <div class="container">
+          <div class="sidebar">
+            <h1>Ljubljana OD Routes</h1>
+
+            <label>Display mode:</label>
+            <button id="lj-modeToggle" class="primary">Basemap + Thematic Layers</button>
+
+            <label>Map opacity:</label>
+            <input type="range" id="lj-mapOpacity" min="0.2" max="1" step="0.1" value="1" style="margin-bottom: 0.3rem;">
+            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="lj-opacity-val">100</span>%</div>
+
+            <label>Grid circles:</label>
+            <input type="range" id="lj-circles" min="2" max="8" value="3" style="margin-bottom: 0.3rem;">
+            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="lj-circles-val">3</span> rings</div>
+
+            <label>Grid sectors:</label>
+            <input type="range" id="lj-sectors" min="8" max="24" step="2" value="12" style="margin-bottom: 0.3rem;">
+            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="lj-sectors-val">12</span> divisions</div>
+
+            <label>Scale (km):</label>
+            <input type="range" id="lj-scale" min="2" max="20" value="10" style="margin-bottom: 0.3rem;">
+            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="lj-scale-val">10</span> km</div>
+
+            <label>Rotation:</label>
+            <input type="range" id="lj-rotation" min="0" max="360" value="0" style="margin-bottom: 0.3rem;">
+            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="lj-rotation-val">0</span>°</div>
+
+            <label>Grid center:</label>
+            <button id="lj-setGridCenterBtn" class="primary">Click Map to Set Center</button>
+            <button id="lj-resetDestinationsBtn" class="success">Reset All (Origin + Routes)</button>
+            <div style="font-size: 12px; color: #999; margin-bottom: 1rem; padding: 8px; background: #f9f9f9; border-radius: 4px;">
+              <strong>Current:</strong> <span id="lj-gridCenterDisplay">Origin</span>
+            </div>
+
+            <div class="loading-note" id="lj-loadingStatus">Loading data...</div>
+          </div>
+          <div class="map" id="lj-map"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ==========================================================
+    // Shared factory: builds one city's map + controls.
+    // Called once per city with a different config; every DOM id
+    // and JS variable is scoped inside this function, so the two
+    // cities never collide even though they share this one file.
+    // ==========================================================
+    function initCityMap(cfg) {
+      const p = cfg.prefix; // 'bcn' or 'lj'
+      const id = (name) => `${p}-${name}`;
+      const el = (name) => document.getElementById(id(name));
+
+      const origin = { lat: cfg.origin.lat, lng: cfg.origin.lng };
+      const originalOrigin = { ...origin };
+      const destinations = cfg.destinations.map(d => ({ ...d }));
+      const originalDestinations = destinations.map(d => ({ ...d }));
+
+      // ---- Map + basemaps ----
+      const map = L.map(id('map')).setView([origin.lat, origin.lng], 13);
+
+      const map1 = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', { attribution: '© CartoDB' });
+      const map2 = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', { attribution: '© Esri' });
+      const map3 = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { attribution: '© OpenTopoMap' });
+      const map4 = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', { attribution: '© Esri Topo' });
+      const baseMaps = { 'Light': map1, 'Street': map2, 'OpenTopo': map3, 'World Topo': map4 };
+      map1.addTo(map);
+
+      // ---- Layer groups ----
+      const eubuccoLayer = L.layerGroup().addTo(map);
+      const overlayMaps = { 'EUBUCCO Buildings': eubuccoLayer };
+
+      let transitLinesLayer = null;
+      let transitStopsLayer = null;
+      if (cfg.transit) {
+        transitLinesLayer = L.layerGroup().addTo(map);
+        transitStopsLayer = L.layerGroup().addTo(map);
+        overlayMaps[cfg.transit.linesLabel || 'Transit Lines'] = transitLinesLayer;
+        overlayMaps[cfg.transit.stopsLabel || 'Transit Stops'] = transitStopsLayer;
+      }
+
+      L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+      // ---- Load data (script-tag globals; see head) ----
+      // NOTE: window[name] does NOT see top-level const/let declared by another <script> tag
+      // (only `var` attaches to window). Use a guarded eval to resolve the binding by name instead.
+      function safeGlobal(name) {
+        try { return eval(name); } catch (e) { return undefined; }
+      }
+
+      const status = el('loadingStatus');
+      const missing = [];
+      const parts = [];
+
+      if (cfg.transit) {
+        const t = cfg.transit;
+        const linesData = safeGlobal(t.linesVar);
+        if (typeof linesData !== 'undefined') {
+          L.geoJSON(linesData, {
+            style: (feature) => ({
+              color: t.lineColor(feature.properties),
+              weight: 1.5, opacity: 0.85, lineCap: 'round', lineJoin: 'round'
+            }),
+            onEachFeature: (feature, layer) => {
+              layer.bindPopup(t.linePopup(feature.properties));
+            }
+          }).addTo(transitLinesLayer);
+          parts.push(`${linesData.features.length} lines`);
+        } else {
+          missing.push(t.linesFile);
+        }
+
+        const stopsData = safeGlobal(t.stopsVar);
+        if (typeof stopsData !== 'undefined') {
+          L.geoJSON(stopsData, {
+            pointToLayer: (feature, latlng) => L.circleMarker(latlng, {
+              radius: 3, fillColor: t.stopColor, color: t.stopBorder, weight: 1, opacity: 0.85, fillOpacity: 0.85
+            }),
+            onEachFeature: (feature, layer) => {
+              layer.bindPopup(t.stopPopup(feature.properties));
+            }
+          }).addTo(transitStopsLayer);
+          parts.push(`${stopsData.features.length} stops`);
+        } else {
+          missing.push(t.stopsFile);
+        }
+      }
+
+      const buildingsVar = cfg.buildingsVar; // name of the global the buildings script sets
+      const buildingsData = safeGlobal(buildingsVar);
+
+      if (typeof buildingsData !== 'undefined') {
+        L.geoJSON(buildingsData, {
+          style: { color: '#f39c12', weight: 0.5, opacity: 0.9, fillOpacity: 0.7 },
+          onEachFeature: (feature, layer) => {
+            const props = feature.properties || {};
+            const h = props.h !== undefined ? props.h : props.height;
+            layer.bindPopup(`Building<br>H: ${h ? Number(h).toFixed(1) + 'm' : '?'}`);
+          }
+        }).addTo(eubuccoLayer);
+        parts.push(`${buildingsData.features.length} buildings`);
+      } else {
+        missing.push(cfg.buildingsFile);
+      }
+
+      status.textContent = missing.length
+        ? 'Missing file(s): ' + missing.join(', ')
+        : '\u2713 ' + parts.join(', ');
+
+      // ---- Panes ----
+      const gridPane = map.createPane(id('grid'));
+      gridPane.style.zIndex = 250;
+      const routePane = map.createPane(id('routes'));
+      routePane.style.zIndex = 400;
+      const markerPane = map.createPane(id('markers'));
+      markerPane.style.zIndex = 600;
+
+      const gridGroup = L.layerGroup().addTo(map);
+      const routeGroup = L.layerGroup().addTo(map);
+      const markerGroup = L.layerGroup().addTo(map);
+
+      function drawGrid() {
+        gridGroup.clearLayers();
+        const circles = parseInt(el('circles').value);
+        const sectors = parseInt(el('sectors').value);
+        const scaleKm = parseInt(el('scale').value);
+        const rotation = parseInt(el('rotation').value);
+
+        for (let i = 1; i <= circles; i++) {
+          L.circle(gridCenter, {
+            radius: (scaleKm / circles) * i * 1000,
+            fill: false, color: '#222', weight: 1, dashArray: '4,4', pane: id('grid')
+          }).addTo(gridGroup);
+        }
+
+        for (let i = 0; i < sectors; i++) {
+          const angle = (360 / sectors) * i + rotation;
+          const rad = angle * Math.PI / 180;
+          const dist = scaleKm / 111;
+          const destLat = gridCenter.lat + dist * Math.cos(rad);
+          const destLng = gridCenter.lng + dist / Math.cos(gridCenter.lat * Math.PI / 180) * Math.sin(rad);
+          L.polyline([gridCenter, { lat: destLat, lng: destLng }], {
+            color: '#444', weight: 0.7, dashArray: '3,3', pane: id('grid')
+          }).addTo(gridGroup);
+        }
+      }
+
+      function drawRoutes() {
+        routeGroup.clearLayers();
+        destinations.forEach(dest => {
+          L.polyline([origin, dest], { color: '#d9534f', weight: 3, opacity: 0.8, pane: id('routes') }).addTo(routeGroup);
+        });
+      }
+
+      function drawMarkers() {
+        markerGroup.clearLayers();
+
+        destinations.forEach((dest, idx) => {
+          const icon = L.divIcon({
+            html: `<div style="width:16px;height:16px;display:flex;align-items:center;justify-content:center;background:#d9534f;color:white;border-radius:50%;font-weight:bold;font-size:9px;border:1px solid white;box-shadow:0 2px 3px rgba(0,0,0,0.3);">${idx + 1}</div>`,
+            iconSize: [16, 16], iconAnchor: [8, 8], className: 'marker-icon', popupAnchor: [0, -10]
+          });
+          const marker = L.marker(dest, { icon, pane: id('markers'), draggable: true }).addTo(markerGroup);
+          marker.on('drag', () => {
+            const pos = marker.getLatLng();
+            destinations[idx].lat = pos.lat;
+            destinations[idx].lng = pos.lng;
+            drawRoutes();
+          });
+        });
+
+        const originIcon = L.divIcon({
+          html: `<div style="width:8px;height:8px;background:#d9534f;border-radius:50%;border:1px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.3);"></div>`,
+          iconSize: [8, 8], iconAnchor: [4, 4], className: 'origin-icon', popupAnchor: [0, -5]
+        });
+        const originMarker = L.marker(origin, { icon: originIcon, pane: id('markers'), draggable: true }).addTo(markerGroup);
+        originMarker.on('drag', () => {
+          const pos = originMarker.getLatLng();
+          origin.lat = pos.lat;
+          origin.lng = pos.lng;
+          drawRoutes();
+          drawGrid();
+        });
+      }
+
+      function update() {
+        drawGrid();
+        drawRoutes();
+        drawMarkers();
+        el('circles-val').textContent = el('circles').value;
+        el('sectors-val').textContent = el('sectors').value;
+        el('scale-val').textContent = el('scale').value;
+        el('rotation-val').textContent = el('rotation').value;
+      }
+
+      // ---- Grid center control ----
+      let gridCenter = { lat: cfg.gridCenter.lat, lng: cfg.gridCenter.lng };
+      let selectingGridCenter = false;
+      let tempMarker = null;
+
+      el('setGridCenterBtn').addEventListener('click', () => {
+        selectingGridCenter = !selectingGridCenter;
+        const btn = el('setGridCenterBtn');
+        if (selectingGridCenter) {
+          btn.textContent = 'Click on map...';
+          btn.style.background = '#666';
+          map.dragging.disable();
+        } else {
+          btn.textContent = 'Click Map to Set Center';
+          btn.style.background = '#d9534f';
+          map.dragging.enable();
+          if (tempMarker) { markerGroup.removeLayer(tempMarker); tempMarker = null; }
+        }
+      });
+
+      map.on('click', (e) => {
+        if (selectingGridCenter) {
+          gridCenter = { lat: e.latlng.lat, lng: e.latlng.lng };
+          if (tempMarker) markerGroup.removeLayer(tempMarker);
+          tempMarker = L.marker(gridCenter, {
+            icon: L.divIcon({
+              html: `<div style="width:20px;height:20px;background:#ffc107;border:2px solid white;border-radius:50%;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div>`,
+              iconSize: [20, 20], iconAnchor: [10, 10], className: 'center-icon'
+            })
+          }).addTo(markerGroup);
+          el('gridCenterDisplay').textContent = `${gridCenter.lat.toFixed(4)}°, ${gridCenter.lng.toFixed(4)}°`;
+          update();
+        }
+      });
+
+      el('resetDestinationsBtn').addEventListener('click', () => {
+        origin.lat = originalOrigin.lat;
+        origin.lng = originalOrigin.lng;
+        for (let i = 0; i < destinations.length; i++) {
+          destinations[i].lat = originalDestinations[i].lat;
+          destinations[i].lng = originalDestinations[i].lng;
+        }
+        update();
+      });
+
+      // ---- Mode toggle ----
+      const darkBg = L.rectangle([[-90, -180], [90, 180]], {
+        color: '#1a1a1a', weight: 0, fillColor: '#1a1a1a', fillOpacity: 1, pane: 'mapPane'
+      });
+      let nightMode = false;
+      el('modeToggle').addEventListener('click', () => {
+        nightMode = !nightMode;
+        const btn = el('modeToggle');
+        if (nightMode) {
+          [map1, map2, map3, map4].forEach(m => map.removeLayer(m));
+          darkBg.addTo(map);
+          darkBg.bringToBack();
+          btn.textContent = 'Thematic Layers Only';
+          btn.style.background = '#34495e';
+        } else {
+          darkBg.remove();
+          map1.addTo(map);
+          btn.textContent = 'Basemap + Thematic Layers';
+          btn.style.background = '#d9534f';
+        }
+      });
+
+      // ---- Event listeners ----
+      ['circles', 'sectors', 'scale', 'rotation'].forEach(name => {
+        el(name).addEventListener('input', update);
+      });
+
+      el('mapOpacity').addEventListener('input', (e) => {
+        const opacity = parseFloat(e.target.value);
+        [map1, map2, map3, map4].forEach(m => m.setOpacity(opacity));
+        el('opacity-val').textContent = Math.round(opacity * 100);
+      });
+
+      map.on('zoom', update);
+      map.on('move', update);
+
+      // ---- Init ----
+      el('gridCenterDisplay').textContent = `${gridCenter.lat.toFixed(4)}°, ${gridCenter.lng.toFixed(4)}°`;
+      update();
+
+      return map;
+    }
+
+    // ==================== BARCELONA ====================
+    const bcnMap = initCityMap({
+      prefix: 'bcn',
+      origin: { lat: 41.35716798139434, lng: 2.117563816738617 },
+      destinations: [
+        { lat: 41.39349087656098, lng: 2.10433505742488 },
+        { lat: 41.408040663675, lng: 2.1303669186088214 },
+        { lat: 41.43675127674807, lng: 2.1563230940783074 },
+        { lat: 41.4136338394865, lng: 2.161673645629887 },
+        { lat: 41.38771322, lng: 2.16971676 }, // #5 -> Catalunya (L1L3)
+        { lat: 41.467719076696895, lng: 2.1807657070312336 },
+        { lat: 41.409522931575275, lng: 2.1834160690307414 },
+        { lat: 41.407152128413905, lng: 2.2119741035461615 },
+        { lat: 41.36567409964743, lng: 2.1555097729964245 }
+      ],
+      gridCenter: { lat: 41.38771322, lng: 2.16971676 }, // Plaça Catalunya
+      transit: {
+        linesVar: 'metroLinesData',
+        linesFile: 'linies_metro.js',
+        linesLabel: 'Metro Lines',
+        stopsVar: 'estacionsData',
+        stopsFile: 'estacions.js',
+        stopsLabel: 'Metro Stations',
+        lineColor: () => '#2ecc71',
+        linePopup: (p) => `<strong>${p.NOM_LINIA}</strong><br>${p.DESC_LINIA || ''}`,
+        stopColor: '#2ecc71',
+        stopBorder: '#27ae60',
+        stopPopup: (p) => `<strong>${p.NOM_ESTACIO}</strong><br>Lines: ${p.PICTO || 'N/A'}`
+      },
+      buildingsVar: 'bcnEubuccoData',
+      buildingsFile: 'bcn-eubucco.js'
+    });
+
+    // ==================== LJUBLJANA ====================
+    const ljMap = initCityMap({
+      prefix: 'lj',
+      origin: { lat: 46.04075648592688, lng: 14.467694364503426 },
+      destinations: [
+        { lat: 46.07694851115498, lng: 14.453649097950477 },
+        { lat: 46.07340651485981, lng: 14.47967081083415 },
+        { lat: 46.081765426279865, lng: 14.510952472808683 },
+        { lat: 46.06584592876618, lng: 14.52396387281878 },
+        { lat: 46.0514099180092, lng: 14.5030494114206 }, // #5 -> Konzorcij
+        { lat: 46.06490150726962, lng: 14.613613971856871 },
+        { lat: 46.062136342590065, lng: 14.546195523662151 },
+        { lat: 46.04571771815196, lng: 14.544915398888447 },
+        { lat: 46.037201432191495, lng: 14.501756711479654 }
+      ],
+      gridCenter: { lat: 46.0514099180092, lng: 14.5030494114206 }, // Konzorcij
+      transit: {
+        linesVar: 'lppLinesData',
+        linesFile: 'lpp-lines.js',
+        linesLabel: 'LPP Bus Lines',
+        stopsVar: 'lppStopsData',
+        stopsFile: 'lpp-stops.js',
+        stopsLabel: 'LPP Bus Stops',
+        lineColor: () => '#3498db',
+        linePopup: (p) => `<strong>Line ${p.route}</strong><br>${p.headsign || ''}`,
+        stopColor: '#3498db',
+        stopBorder: '#2980b9',
+        stopPopup: (p) => `<strong>${p.name}</strong>${p.code ? '<br>Stop ' + p.code : ''}`
+      },
+      buildingsVar: 'eubuccoData',
+      buildingsFile: 'eubucco-data.js'
+    });
+
+    // ==================== TAB SWITCHING ====================
+    const maps = { bcn: bcnMap, lj: ljMap };
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.tab;
+
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+        document.querySelectorAll('.tab-panel').forEach(panel => {
+          panel.classList.toggle('active', panel.id === `panel-${tab}`);
+        });
+
+        // Leaflet needs to recompute size after being unhidden.
+        requestAnimationFrame(() => maps[tab].invalidateSize());
+      });
+    });
+  </script>
+</body>
+</html>
