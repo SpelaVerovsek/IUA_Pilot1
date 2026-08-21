@@ -6,6 +6,7 @@
   <title>OD Routes</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.min.js"></script>
   <!-- Data files. Script tags bypass the CORS rule that blocks fetch() on file://. -->
   <script src="linies_metro.js"></script>
   <script src="estacions.js"></script>
@@ -202,7 +203,31 @@
       function safeGlobal(name) {
         try { return eval(name); } catch (e) { return undefined; }
       }
+      function safeGlobal(name) {
+        try { return eval(name); } catch (e) { return undefined; }
+      }
+      proj4.defs("EPSG:3794", "+proj=tmerc +lat_0=0 +lon_0=15 +k=0.9999 +x_0=500000 +y_0=-5000000 +ellps=GRS80 +towgs84=0,0,0,0,0,0,0 +units=m +no_defs");
 
+      function transformCoordinates(coords) {
+          if (!Array.isArray(coords)) return coords;
+          if (typeof coords[0] === 'number' && typeof coords[1] === 'number' && coords.length === 2) {
+              const [x, y] = coords;
+              const transformed = proj4('EPSG:3794', 'EPSG:4326', [x, y]);
+              return [transformed[0], transformed[1]];
+          }
+          return coords.map(c => transformCoordinates(c));
+      }
+
+      function transformGeoJSON(geoData) {
+          if (!geoData) return geoData;
+          const transformed = JSON.parse(JSON.stringify(geoData));
+          transformed.features.forEach(feature => {
+              if (feature.geometry && feature.geometry.coordinates) {
+                  feature.geometry.coordinates = transformCoordinates(feature.geometry.coordinates);
+              }
+          });
+          return transformed;
+      }
       const status = el('loadingStatus');
       const missing = [];
       const parts = [];
