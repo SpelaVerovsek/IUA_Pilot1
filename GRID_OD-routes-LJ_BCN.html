@@ -286,7 +286,8 @@
       // ---- Load boundaries from global variables ----
       const boundaryVar = cfg.boundaryVar;
       if (boundaryVar) {
-        const boundaryData = safeGlobal(boundaryVar);
+        let boundaryData = safeGlobal(boundaryVar);
+        boundaryData = transformGeoJSON(boundaryData);  // <-- ADD THIS LINE
         if (typeof boundaryData !== 'undefined') {
           L.geoJSON(boundaryData, {
             style: { color: '#d9534f', weight: 2, opacity: 0.8, fill: false },
