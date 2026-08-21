@@ -13,6 +13,8 @@
   <script src="eubucco-data.js"></script>
   <script src="lpp-lines.js"></script>
   <script src="lpp-stops.js"></script>
+  <script src="meja_lj.js"></script>
+  <script src="barcelona_boundary.js"></script>
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -188,6 +190,10 @@
         overlayMaps[cfg.transit.stopsLabel || 'Transit Stops'] = transitStopsLayer;
       }
 
+      // ---- Boundaries layer ----
+      const boundariesLayer = L.layerGroup().addTo(map);
+      overlayMaps['City Boundaries'] = boundariesLayer;
+
       L.control.layers(baseMaps, overlayMaps).addTo(map);
 
       // ---- Load data (script-tag globals; see head) ----
@@ -250,6 +256,25 @@
         parts.push(`${buildingsData.features.length} buildings`);
       } else {
         missing.push(cfg.buildingsFile);
+      }
+
+      // ---- Load boundaries from global variables ----
+      const boundaryVar = cfg.boundaryVar;
+      if (boundaryVar) {
+        const boundaryData = safeGlobal(boundaryVar);
+        if (typeof boundaryData !== 'undefined') {
+          L.geoJSON(boundaryData, {
+            style: { color: '#d9534f', weight: 2, opacity: 0.8, fill: false },
+            onEachFeature: (feature, layer) => {
+              const props = feature.properties || {};
+              const name = props.name || 'Boundary';
+              layer.bindPopup(`<strong>${name}</strong>`);
+            }
+          }).addTo(boundariesLayer);
+          parts.push('boundary');
+        } else {
+          missing.push(cfg.boundaryFile);
+        }
       }
 
       status.textContent = missing.length
@@ -460,7 +485,9 @@
         stopPopup: (p) => `<strong>${p.NOM_ESTACIO}</strong><br>Lines: ${p.PICTO || 'N/A'}`
       },
       buildingsVar: 'bcnEubuccoData',
-      buildingsFile: 'bcn-eubucco.js'
+      buildingsFile: 'bcn-eubucco.js',
+      boundaryVar: 'barcelonaBoundaryData',
+      boundaryFile: 'barcelona_boundary.js'
     });
 
     // ==================== LJUBLJANA ====================
@@ -493,7 +520,9 @@
         stopPopup: (p) => `<strong>${p.name}</strong>${p.code ? '<br>Stop ' + p.code : ''}`
       },
       buildingsVar: 'eubuccoData',
-      buildingsFile: 'eubucco-data.js'
+      buildingsFile: 'eubucco-data.js',
+      boundaryVar: 'mejaLjData',
+      boundaryFile: 'meja_lj.js'
     });
 
     // ==================== TAB SWITCHING ====================
