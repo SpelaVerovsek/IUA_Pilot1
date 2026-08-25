@@ -97,6 +97,7 @@
             <label>Grid center:</label>
             <button id="bcn-setGridCenterBtn" class="primary">Click Map to Set Center</button>
             <button id="bcn-resetDestinationsBtn" class="success">Reset All (Origin + Routes)</button>
+            <button id="bcn-adjustGridBtn" class="info">Adjust Grid Segments</button>
             <div style="font-size: 12px; color: #999; margin-bottom: 1rem; padding: 8px; background: #f9f9f9; border-radius: 4px;">
               <strong>Current:</strong> <span id="bcn-gridCenterDisplay">Origin</span>
             </div>
@@ -139,6 +140,7 @@
             <label>Grid center:</label>
             <button id="lj-setGridCenterBtn" class="primary">Click Map to Set Center</button>
             <button id="lj-resetDestinationsBtn" class="success">Reset All (Origin + Routes)</button>
+            <button id="lj-adjustGridBtn" class="info">Adjust Grid Segments</button>
             <div style="font-size: 12px; color: #999; margin-bottom: 1rem; padding: 8px; background: #f9f9f9; border-radius: 4px;">
               <strong>Current:</strong> <span id="lj-gridCenterDisplay">Origin</span>
             </div>
@@ -304,6 +306,7 @@
           try {
             L.geoJSON(boundaryData, {
               filter: (feature) => feature.geometry.type !== 'Point', // Skip point markers
+              interactive: false, // Don't respond to clicks
               style: { 
                 color: '#d9534f', 
                 weight: 2, 
@@ -311,11 +314,6 @@
                 fill: true,
                 fillColor: '#999999',
                 fillOpacity: 0.15
-              },
-              onEachFeature: (feature, layer) => {
-                const props = feature.properties || {};
-                const name = props.name || 'Boundary';
-                layer.bindPopup(`<strong>${name}</strong>`);
               }
             }).addTo(boundariesLayer);
             console.log('Boundary rendered successfully');
@@ -345,14 +343,21 @@
       const gridGroup = L.layerGroup().addTo(map);
       const routeGroup = L.layerGroup().addTo(map);
       const markerGroup = L.layerGroup().addTo(map);
+      const segmentLayer = L.layerGroup();
+      
+      let adjustingGrid = false;
+      const selectedSegments = new Set();
 
       function drawGrid() {
         gridGroup.clearLayers();
+        segmentLayer.clearLayers();
         const circles = parseInt(el('circles').value);
         const sectors = parseInt(el('sectors').value);
         const scaleKm = parseInt(el('scale').value);
         const rotation = parseInt(el('rotation').value);
+        let segId = 0;
 
+        // Draw concentric circles
         for (let i = 1; i <= circles; i++) {
           L.circle(gridCenter, {
             radius: (scaleKm / circles) * i * 1000,
@@ -360,15 +365,84 @@
           }).addTo(gridGroup);
         }
 
+        // Draw sectors and segments
         for (let i = 0; i < sectors; i++) {
           const angle = (360 / sectors) * i + rotation;
           const rad = angle * Math.PI / 180;
           const dist = scaleKm / 111;
           const destLat = gridCenter.lat + dist * Math.cos(rad);
           const destLng = gridCenter.lng + dist / Math.cos(gridCenter.lat * Math.PI / 180) * Math.sin(rad);
+          
+          // Draw radial line
           L.polyline([gridCenter, { lat: destLat, lng: destLng }], {
             color: '#444', weight: 0.7, dashArray: '3,3', pane: id('grid')
           }).addTo(gridGroup);
+
+          // Create clickable segments (one per ring in this sector)
+          for (let ring = 0; ring < circles; ring++) {
+            const r1 = ring === 0 ? 0 : (scaleKm / circles) * ring / 111;
+            const r2 = (scaleKm / circles) * (ring + 1) / 111;
+            const angle1 = (360 / sectors) * i + rotation;
+            const angle2 = (360 / sectors) * (i + 1) + rotation;
+            const rad1 = angle1 * Math.PI / 180;
+            const rad2 = angle2 * Math.PI / 180;
+            
+            const isSelected = selectedSegments.has(segId);
+            const segPoints = [];
+            
+            // Inner arc or center point
+            if (ring === 0) {
+              segPoints.push(gridCenter);
+            } else {
+              for (let a = angle1; a <= angle2; a += 2) {
+                const rad = a * Math.PI / 180;
+                segPoints.push({
+                  lat: gridCenter.lat + r1 * Math.cos(rad),
+                  lng: gridCenter.lng + r1 / Math.cos(gridCenter.lat * Math.PI / 180) * Math.sin(rad)
+                });
+              }
+            }
+            
+            // Outer arc (backwards)
+            for (let a = angle2; a >= angle1; a -= 2) {
+              const rad = a * Math.PI / 180;
+              segPoints.push({
+                lat: gridCenter.lat + r2 * Math.cos(rad),
+                lng: gridCenter.lng + r2 / Math.cos(gridCenter.lat * Math.PI / 180) * Math.sin(rad)
+              });
+            }
+            
+            if (adjustingGrid || isSelected) {
+              const seg = L.polygon(segPoints, {
+                color: isSelected ? '#27ae60' : '#aaa',
+                fillColor: isSelected ? '#2ecc71' : '#bbb',
+                fillOpacity: isSelected ? 0.15 : 0.3,
+                weight: 0.5,
+                interactive: adjustingGrid
+              });
+              
+              if (adjustingGrid) {
+                const cid = segId;
+                seg.on('click', (e) => {
+                  L.DomEvent.stopPropagation(e);
+                  if (selectedSegments.has(cid)) {
+                    selectedSegments.delete(cid);
+                  } else {
+                    selectedSegments.add(cid);
+                  }
+                  drawGrid();
+                });
+              }
+              
+              if (adjustingGrid) {
+                segmentLayer.addLayer(seg);
+              } else if (isSelected) {
+                gridGroup.addLayer(seg);
+              }
+            }
+            
+            segId++;
+          }
         }
       }
 
@@ -444,10 +518,34 @@
         if (selectingGridCenter) {
           gridCenter = { lat: e.latlng.lat, lng: e.latlng.lng };
           if (tempMarker) markerGroup.removeLayer(tempMarker);
-          // Don't show center marker at all
           el('gridCenterDisplay').textContent = `${gridCenter.lat.toFixed(4)}°, ${gridCenter.lng.toFixed(4)}°`;
+          selectingGridCenter = false;
+          el('setGridCenterBtn').textContent = 'Click Map to Set Center';
+          el('setGridCenterBtn').style.background = '#d9534f';
+          map.dragging.enable();
           update();
         }
+      });
+
+      el('adjustGridBtn').addEventListener('click', () => {
+        adjustingGrid = !adjustingGrid;
+        const btn = el('adjustGridBtn');
+        if (adjustingGrid) {
+          btn.textContent = 'Done Adjusting';
+          btn.style.background = '#1a7db8';
+          btn.style.color = 'white';
+          segmentLayer.addTo(map);
+        } else {
+          btn.textContent = 'Adjust Grid Segments';
+          btn.style.background = '';
+          btn.style.color = '';
+          map.removeLayer(segmentLayer);
+        }
+        drawGrid();
+      });
+
+      ['circles', 'sectors', 'scale', 'rotation'].forEach(param => {
+        el(param).addEventListener('input', update);
       });
 
       el('resetDestinationsBtn').addEventListener('click', () => {
