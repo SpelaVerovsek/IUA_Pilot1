@@ -16,6 +16,7 @@
   <script src="lpp-stops.js"></script>
   <script src="meja_lj_FIXED.js"></script>
   <script src="barcelona_boundary_FIXED.js"></script>
+  <script src="ljubljana_grid_minimal.js"></script>
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -193,6 +194,20 @@
         overlayMaps[cfg.transit.stopsLabel || 'Transit Stops'] = transitStopsLayer;
       }
 
+      // ---- Population Density Layer (Barcelona) ----
+      let populationDensityLayerBcn = null;
+      if (p === 'bcn') {
+        populationDensityLayerBcn = L.layerGroup();
+        overlayMaps['Population Density'] = populationDensityLayerBcn;
+      }
+
+      // ---- Population Density Layer (Ljubljana) ----
+      let populationDensityLayerLj = null;
+      if (p === 'lj') {
+        populationDensityLayerLj = L.layerGroup().addTo(map);
+        overlayMaps['Population Density'] = populationDensityLayerLj;
+      }
+
       // ---- Boundaries layer ----
       const boundariesLayer = L.layerGroup().addTo(map);
       overlayMaps['City Boundaries'] = boundariesLayer;
@@ -325,6 +340,43 @@
         } else {
           console.warn('Boundary data is undefined or empty:', cfg.boundaryVar);
           missing.push(cfg.boundaryFile);
+        }
+      }
+
+      // ---- Load Population Density (Ljubljana only for now) ----
+      if (p === 'lj' && populationDensityLayerLj && typeof LJUBLJANA_GRID_MINIMAL !== 'undefined') {
+        try {
+          L.geoJSON(LJUBLJANA_GRID_MINIMAL, {
+            style: (feature) => {
+              const pop = feature.properties.pop;
+              let color = '#FFFFCC';
+              if (pop > 350) color = '#800026';
+              else if (pop > 140) color = '#BD0026';
+              else if (pop > 80) color = '#E31A1C';
+              else if (pop > 30) color = '#FC4E2A';
+              else if (pop > 10) color = '#FED976';
+              return {
+                fillColor: color,
+                weight: 0.3,
+                opacity: 0.9,
+                color: '#ccc',
+                fillOpacity: 0.75
+              };
+            },
+            onEachFeature: (feature, layer) => {
+              const props = feature.properties;
+              const popup = `<div style="font-size:12px;"><strong>${props.id}</strong><br>Population: ${props.pop}<br>Males: ${props.m} | Females: ${props.f}</div>`;
+              layer.bindPopup(popup);
+              layer.on({
+                mouseover: () => layer.setStyle({ weight: 1, color: '#333', fillOpacity: 0.95 }),
+                mouseout: () => layer.setStyle({ weight: 0.3, color: '#ccc', fillOpacity: 0.75 })
+              });
+            }
+          }).addTo(populationDensityLayerLj);
+          parts.push(`${LJUBLJANA_GRID_MINIMAL.features.length} population cells`);
+        } catch (err) {
+          console.error('Error loading population density:', err);
+          missing.push('Ljubljana population density');
         }
       }
 
