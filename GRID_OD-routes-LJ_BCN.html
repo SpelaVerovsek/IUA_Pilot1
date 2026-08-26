@@ -16,7 +16,7 @@
   <script src="lpp-stops.js"></script>
   <script src="meja_lj_FIXED.js"></script>
   <script src="barcelona_boundary_FIXED.js"></script>
-  <script src="ljubljana_grid_minimal.js"></script>
+  <script src="lj_population_density.js"></script>
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -182,7 +182,7 @@
       map1.addTo(map);
 
       // ---- Layer groups ----
-      const eubuccoLayer = L.layerGroup().addTo(map);
+      const eubuccoLayer = L.layerGroup();
       const overlayMaps = { 'EUBUCCO Buildings': eubuccoLayer };
 
       let transitLinesLayer = null;
@@ -344,9 +344,9 @@
       }
 
       // ---- Load Population Density (Ljubljana only for now) ----
-      if (p === 'lj' && populationDensityLayerLj && typeof LJUBLJANA_GRID_MINIMAL !== 'undefined') {
+      if (p === 'lj' && populationDensityLayerLj && typeof LJ_POPULATION_DENSITY !== 'undefined') {
         try {
-          L.geoJSON(LJUBLJANA_GRID_MINIMAL, {
+          L.geoJSON(LJ_POPULATION_DENSITY, {
             style: (feature) => {
               const pop = feature.properties.pop;
               let color = '#FFFFCC';
@@ -373,7 +373,7 @@
               });
             }
           }).addTo(populationDensityLayerLj);
-          parts.push(`${LJUBLJANA_GRID_MINIMAL.features.length} population cells`);
+          parts.push(`${LJ_POPULATION_DENSITY.features.length} population cells`);
         } catch (err) {
           console.error('Error loading population density:', err);
           missing.push('Ljubljana population density');
