@@ -17,6 +17,7 @@
   <script src="meja_lj_FIXED.js"></script>
   <script src="barcelona_boundary_FIXED.js"></script>
   <script src="lj_population_density.js"></script>
+  <script src="lj_age_layers.js"></script>
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -174,7 +175,7 @@
       // ---- Map + basemaps ----
       const map = L.map(id('map')).setView([origin.lat, origin.lng], 13);
 
-      const map1 = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', { attribution: '© CartoDB' });
+      const map1 = L.tileLayer('https://basemaps.cartocdn.com/rastertiles/light_nolabels/{z}/{x}/{y}.png?key=cb1_2che_1_9a517cca90f919632c8a6a8c', { attribution: '© CartoDB' });
       const map2 = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', { attribution: '© Esri' });
       const map3 = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { attribution: '© OpenTopoMap' });
       const map4 = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', { attribution: '© Esri Topo' });
@@ -212,7 +213,7 @@
       const boundariesLayer = L.layerGroup().addTo(map);
       overlayMaps['City Boundaries'] = boundariesLayer;
 
-      L.control.layers(baseMaps, overlayMaps).addTo(map);
+      let layersControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
 
       // ---- Load data (script-tag globals; see head) ----
       // NOTE: window[name] does NOT see top-level const/let declared by another <script> tag
@@ -373,6 +374,34 @@
               });
             }
           }).addTo(populationDensityLayerLj);
+          
+          // Add Age layers (Ljubljana only)
+          if (typeof createYouthAgeLayer !== 'undefined' && typeof createElderlyAgeLayer !== 'undefined' && typeof ageGridData !== 'undefined') {
+            const youthLayer = createYouthAgeLayer(LJ_POPULATION_DENSITY);
+            const elderlyLayer = createElderlyAgeLayer(LJ_POPULATION_DENSITY);
+            
+            // Create reorganized overlayMaps with population groups at bottom
+            const reorganizedMaps = {};
+            
+            // Add other layers first (EUBUCCO, Transit, Boundaries)
+            for (let key in overlayMaps) {
+              if (key !== 'Population Density') {
+                reorganizedMaps[key] = overlayMaps[key];
+              }
+            }
+            
+            // Population-related layers at bottom
+            reorganizedMaps['Population Density'] = overlayMaps['Population Density'];
+            reorganizedMaps['Youth (0-14%)'] = youthLayer;
+            reorganizedMaps['Elderly (65+%)'] = elderlyLayer;
+            
+            // Update layers control with reorganized maps
+            if (layersControl) {
+              map.removeControl(layersControl);
+            }
+            layersControl = L.control.layers(baseMaps, reorganizedMaps).addTo(map);
+          }
+          
           parts.push(`${LJ_POPULATION_DENSITY.features.length} population cells`);
         } catch (err) {
           console.error('Error loading population density:', err);
