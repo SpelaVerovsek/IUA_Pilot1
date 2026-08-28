@@ -18,6 +18,93 @@
   <script src="barcelona_boundary_FIXED.js"></script>
   <script src="lj_population_density.js"></script>
   <script src="lj_age_layers.js"></script>
+  <script>
+    // ============================================================================
+    // ALL LAYER THRESHOLDS & COLORS DEFINED HERE (Population, Youth, Elderly)
+    // ============================================================================
+    window.ageLayersConfig = {
+      // Population Density thresholds and colors
+      densityThresholds: [10, 30, 80, 140, 350],
+      densityColors: ['#FFFFCC', '#FED976', '#FC4E2A', '#E31A1C', '#BD0026', '#800026'],
+      
+      // Youth (0-14%) thresholds and colors
+      youthThresholds: [15, 17, 21, 23],
+      youthColors: ['#e6f2ff', '#99d9ff', '#4db8ff', '#0066cc', '#003d7a'],
+      
+      // Elderly (65+%) thresholds and colors
+      elderlyThresholds: [20, 24, 26, 28],
+      elderlyColors: ['#fffacd', '#ffc600', '#ff6b00', '#ff3300', '#8b0000']
+    };
+    
+    // Color functions that read thresholds from config
+    function getPopulationDensityColor(value) {
+      const t = window.ageLayersConfig.densityThresholds;
+      const c = window.ageLayersConfig.densityColors;
+      if (value <= t[0]) return c[0];
+      if (value <= t[1]) return c[1];
+      if (value <= t[2]) return c[2];
+      if (value <= t[3]) return c[3];
+      if (value <= t[4]) return c[4];
+      return c[5];
+    }
+    
+    function getYouthColor(value) {
+      const t = window.ageLayersConfig.youthThresholds;
+      const c = window.ageLayersConfig.youthColors;
+      if (value <= t[0]) return c[0];
+      if (value <= t[1]) return c[1];
+      if (value <= t[2]) return c[2];
+      if (value <= t[3]) return c[3];
+      return c[4];
+    }
+    
+    function getElderlyColor(value) {
+      const t = window.ageLayersConfig.elderlyThresholds;
+      const c = window.ageLayersConfig.elderlyColors;
+      if (value <= t[0]) return c[0];
+      if (value <= t[1]) return c[1];
+      if (value <= t[2]) return c[2];
+      if (value <= t[3]) return c[3];
+      return c[4];
+    }
+    
+    // Populate age layers with data from ageGridData
+    function populateAgeLayer(geojson, layerRef, colorFunc, fieldName) {
+      if (!layerRef || typeof ageGridData === 'undefined') return;
+      
+      geojson.features.forEach(feature => {
+        const cellId = feature.properties.id || feature.properties.ime_celice;
+        const ageData = ageGridData[cellId];
+        
+        if (!ageData) return;
+        
+        const value = ageData[fieldName];
+        if (value === null || value === undefined || value < 0) return;
+        
+        const color = colorFunc(value);
+        
+        const geoLayer = L.geoJSON(feature, {
+          style: {
+            fillColor: color,
+            weight: 0.3,
+            opacity: 0.9,
+            color: '#ccc',
+            fillOpacity: 0.75
+          },
+          onEachFeature: (feat, layer) => {
+            const popup = `<div style="font-size:12px;"><strong>${cellId}</strong><br>${fieldName}: ${value.toFixed(1)}%</div>`;
+            layer.bindPopup(popup);
+            layer.on({
+              mouseover: () => layer.setStyle({ weight: 1, color: '#333', fillOpacity: 0.95 }),
+              mouseout: () => layer.setStyle({ weight: 0.3, color: '#ccc', fillOpacity: 0.75 })
+            });
+          }
+        });
+        
+        layerRef.addLayer(geoLayer);
+      });
+    }
+  </script>
   <style>
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }
@@ -212,6 +299,16 @@
       // ---- Boundaries layer ----
       const boundariesLayer = L.layerGroup().addTo(map);
       overlayMaps['City Boundaries'] = boundariesLayer;
+      
+      // ---- Age Layers (Ljubljana only) - DEFINED IN HTML ----
+      let youthLayer = null;
+      let elderlyLayer = null;
+      if (p === 'lj') {
+        youthLayer = L.layerGroup();
+        elderlyLayer = L.layerGroup();
+        overlayMaps['Youth (0-14%)'] = youthLayer;
+        overlayMaps['Elderly (65+%)'] = elderlyLayer;
+      }
 
       let layersControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
 
@@ -350,12 +447,7 @@
           L.geoJSON(LJ_POPULATION_DENSITY, {
             style: (feature) => {
               const pop = feature.properties.pop;
-              let color = '#FFFFCC';
-              if (pop > 350) color = '#800026';
-              else if (pop > 140) color = '#BD0026';
-              else if (pop > 80) color = '#E31A1C';
-              else if (pop > 30) color = '#FC4E2A';
-              else if (pop > 10) color = '#FED976';
+              const color = getPopulationDensityColor(pop);
               return {
                 fillColor: color,
                 weight: 0.3,
@@ -375,31 +467,10 @@
             }
           }).addTo(populationDensityLayerLj);
           
-          // Add Age layers (Ljubljana only)
-          if (typeof createYouthAgeLayer !== 'undefined' && typeof createElderlyAgeLayer !== 'undefined' && typeof ageGridData !== 'undefined') {
-            const youthLayer = createYouthAgeLayer(LJ_POPULATION_DENSITY);
-            const elderlyLayer = createElderlyAgeLayer(LJ_POPULATION_DENSITY);
-            
-            // Create reorganized overlayMaps with population groups at bottom
-            const reorganizedMaps = {};
-            
-            // Add other layers first (EUBUCCO, Transit, Boundaries)
-            for (let key in overlayMaps) {
-              if (key !== 'Population Density') {
-                reorganizedMaps[key] = overlayMaps[key];
-              }
-            }
-            
-            // Population-related layers at bottom
-            reorganizedMaps['Population Density'] = overlayMaps['Population Density'];
-            reorganizedMaps['Youth (0-14%)'] = youthLayer;
-            reorganizedMaps['Elderly (65+%)'] = elderlyLayer;
-            
-            // Update layers control with reorganized maps
-            if (layersControl) {
-              map.removeControl(layersControl);
-            }
-            layersControl = L.control.layers(baseMaps, reorganizedMaps).addTo(map);
+          // Populate Age layers (Ljubljana only) - LAYERS ALREADY DEFINED IN HTML
+          if (p === 'lj' && typeof populateAgeLayer !== 'undefined' && typeof ageGridData !== 'undefined') {
+            populateAgeLayer(LJ_POPULATION_DENSITY, youthLayer, getYouthColor, 'pct_p00_14');
+            populateAgeLayer(LJ_POPULATION_DENSITY, elderlyLayer, getElderlyColor, 'pct_p65_');
           }
           
           parts.push(`${LJ_POPULATION_DENSITY.features.length} population cells`);
