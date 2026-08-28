@@ -24,14 +24,14 @@
     // ============================================================================
     window.ageLayersConfig = {
       // Population Density thresholds and colors
-      densityThresholds: [10, 30, 80, 140, 400],
+      densityThresholds: [10, 30, 80, 140, 350],
       densityColors: ['#FFFFCC', '#FED976', '#FC4E2A', '#E31A1C', '#BD0026', '#800026'],
       
-      // Youth (0-14%) thresholds and colors
+      // Youth (ages 0-14, %) thresholds and colors
       youthThresholds: [15, 17, 21, 23],
       youthColors: ['#e6f2ff', '#99d9ff', '#4db8ff', '#0066cc', '#003d7a'],
       
-      // Elderly (65+%) thresholds and colors
+      // Elderly (ages 65+, %) thresholds and colors
       elderlyThresholds: [20, 24, 26, 28],
       elderlyColors: ['#fffacd', '#ffc600', '#ff6b00', '#ff3300', '#8b0000']
     };
@@ -104,6 +104,62 @@
         layerRef.addLayer(geoLayer);
       });
     }
+    
+    // Generate legend HTML from config
+    function updateLegend() {
+      const legendPanel = document.getElementById('legend-panel');
+      const legendContent = document.getElementById('legend-content');
+      const ljPanel = document.getElementById('panel-lj');
+      
+      // Show legend only on Ljubljana tab
+      if (!ljPanel || !ljPanel.classList.contains('active')) {
+        legendPanel.style.display = 'none';
+        return;
+      }
+      
+      legendPanel.style.display = 'block';
+      
+      // Read which thematic layer is selected from the custom radio group
+      const checkedRadio = document.querySelector('#lj-map .leaflet-control-layers-overlays input[type="radio"]:checked');
+      const selected = checkedRadio ? checkedRadio.value : null;
+      const densityOn = selected === 'density';
+      const youthOn = selected === 'youth';
+      const elderlyOn = selected === 'elderly';
+      
+      let html = '';
+      
+      if (densityOn && !youthOn && !elderlyOn) {
+        html = '<strong>Population Density</strong><br><span style="color:#999; font-size:10px;">people per 100×100m cell</span><br>';
+        const t = window.ageLayersConfig.densityThresholds;
+        const c = window.ageLayersConfig.densityColors;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[0]};border:0.5px solid #999;margin-right:5px;"></div>0–${t[0]}</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[1]};border:0.5px solid #999;margin-right:5px;"></div>${t[0]}–${t[1]}</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[2]};border:0.5px solid #999;margin-right:5px;"></div>${t[1]}–${t[2]}</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[3]};border:0.5px solid #999;margin-right:5px;"></div>${t[2]}–${t[3]}</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[4]};border:0.5px solid #999;margin-right:5px;"></div>${t[3]}–${t[4]}</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[5]};border:0.5px solid #999;margin-right:5px;"></div>${t[4]}+</div>`;
+      } else if (youthOn && !densityOn && !elderlyOn) {
+        html = '<strong>Youth (0–14 years; in %)</strong><br>';
+        const t = window.ageLayersConfig.youthThresholds;
+        const c = window.ageLayersConfig.youthColors;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[0]};border:0.5px solid #999;margin-right:5px;"></div>0–${t[0]}%</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[1]};border:0.5px solid #999;margin-right:5px;"></div>${t[0]}–${t[1]}%</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[2]};border:0.5px solid #999;margin-right:5px;"></div>${t[1]}–${t[2]}%</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[3]};border:0.5px solid #999;margin-right:5px;"></div>${t[2]}–${t[3]}%</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[4]};border:0.5px solid #999;margin-right:5px;"></div>${t[3]}%+</div>`;
+      } else if (elderlyOn && !densityOn && !youthOn) {
+        html = '<strong>Elderly (65+ years; in %)</strong><br>';
+        const t = window.ageLayersConfig.elderlyThresholds;
+        const c = window.ageLayersConfig.elderlyColors;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[0]};border:0.5px solid #999;margin-right:5px;"></div>0–${t[0]}%</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[1]};border:0.5px solid #999;margin-right:5px;"></div>${t[0]}–${t[1]}%</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[2]};border:0.5px solid #999;margin-right:5px;"></div>${t[1]}–${t[2]}%</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[3]};border:0.5px solid #999;margin-right:5px;"></div>${t[2]}–${t[3]}%</div>`;
+        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[4]};border:0.5px solid #999;margin-right:5px;"></div>${t[3]}%+</div>`;
+      }
+      
+      legendContent.innerHTML = html || 'Select one layer';
+    }
   </script>
   <style>
     * { box-sizing: border-box; }
@@ -127,12 +183,16 @@
     .container { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
     .sidebar { background: white; padding: 1.5rem; overflow-y: auto; border-right: 1px solid #ddd; }
     .map { position: relative; height: 100%; }
-    label { font-size: 13px; color: #666; margin: 0.5rem 0; display: block; font-weight: 500; }
-    input, select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 1rem; }
+    .sidebar label { font-size: 13px; color: #666; margin: 0.5rem 0; display: block; font-weight: 500; }
+    .sidebar input, .sidebar select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 1rem; }
     .loading-note { font-size: 11px; color: #999; margin-bottom: 1rem; padding: 6px; background: #f0f0f0; border-radius: 3px; }
     button { width: 100%; padding: 8px; border: none; border-radius: 4px; cursor: pointer; margin-bottom: 1rem; font-weight: bold; color: white; }
     button.primary { background: #d9534f; }
     button.success { background: #27ae60; }
+
+    /* Smaller default font for the Leaflet layers control panel */
+    .leaflet-control-layers { font-size: 11px; }
+    .leaflet-control-layers label { margin: 2px 0; }
 
     /* Kill Leaflet's default divIcon white box + grey border */
     .leaflet-div-icon,
@@ -236,7 +296,13 @@
 
             <div class="loading-note" id="lj-loadingStatus">Loading data...</div>
           </div>
-          <div class="map" id="lj-map"></div>
+          <div class="map" id="lj-map">
+            <!-- Legend Panel - Inside Map -->
+            <div id="legend-panel" style="position: absolute; left: 20px; bottom: 20px; width: 220px; background: white; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 999; padding: 12px; display: none; max-height: 300px; overflow-y: auto;">
+              <div style="font-weight: bold; margin-bottom: 8px; font-size: 12px;">Legend</div>
+              <div id="legend-content" style="font-size: 11px; color: #999;">Select a layer</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -282,6 +348,10 @@
         overlayMaps[cfg.transit.stopsLabel || 'Transit Stops'] = transitStopsLayer;
       }
 
+      // ---- Boundaries layer ----
+      const boundariesLayer = L.layerGroup().addTo(map);
+      overlayMaps['City Boundaries'] = boundariesLayer;
+
       // ---- Population Density Layer (Barcelona) ----
       let populationDensityLayerBcn = null;
       if (p === 'bcn') {
@@ -289,28 +359,66 @@
         overlayMaps['Population Density'] = populationDensityLayerBcn;
       }
 
-      // ---- Population Density Layer (Ljubljana) ----
+      // ---- Population Density Layer (Ljubljana) - ON BY DEFAULT ----
+      // NOTE: NOT added to overlayMaps - it gets its own radio group below,
+      // instead of Leaflet's checkbox system, so it can be reliably
+      // mutually exclusive with the two age layers.
       let populationDensityLayerLj = null;
       if (p === 'lj') {
         populationDensityLayerLj = L.layerGroup().addTo(map);
-        overlayMaps['Population Density'] = populationDensityLayerLj;
       }
-
-      // ---- Boundaries layer ----
-      const boundariesLayer = L.layerGroup().addTo(map);
-      overlayMaps['City Boundaries'] = boundariesLayer;
       
       // ---- Age Layers (Ljubljana only) - DEFINED IN HTML ----
+      // Also NOT added to overlayMaps, for the same reason.
       let youthLayer = null;
       let elderlyLayer = null;
       if (p === 'lj') {
         youthLayer = L.layerGroup();
         elderlyLayer = L.layerGroup();
-        overlayMaps['Youth (0-14%)'] = youthLayer;
-        overlayMaps['Elderly (65+%)'] = elderlyLayer;
       }
 
       let layersControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+      // ---- Custom radio group for the three thematic layers (Ljubljana only) ----
+      // Native <input type="radio"> with a shared "name" is mutually exclusive
+      // by the browser itself - no JS race conditions with Leaflet's own
+      // checkbox handling, which is what kept breaking the checkbox approach.
+      if (p === 'lj') {
+        const overlaysList = document.querySelector('#lj-map .leaflet-control-layers-overlays');
+        if (overlaysList) {
+          const radioGroupName = 'lj-thematic-' + Date.now();
+          const wrap = document.createElement('div');
+          wrap.style.borderTop = '1px solid #ddd';
+          wrap.style.marginTop = '6px';
+          wrap.style.paddingTop = '6px';
+          wrap.innerHTML = `
+            <div style="font-weight:bold; margin-bottom:2px;">Population</div>
+            <label style="display:block; margin-left:10px;"><input type="radio" name="${radioGroupName}" value="density" checked> Density</label>
+            <label style="display:block; margin-left:10px;"><input type="radio" name="${radioGroupName}" value="youth"> Youth (0–14 years; in %)</label>
+            <label style="display:block; margin-left:10px;"><input type="radio" name="${radioGroupName}" value="elderly"> Elderly (65+ years; in %)</label>
+            <label style="display:block; margin-left:10px;"><input type="radio" name="${radioGroupName}" value="none"> None</label>
+          `;
+          overlaysList.appendChild(wrap);
+
+          wrap.querySelectorAll('input[type="radio"]').forEach(radio => {
+            radio.addEventListener('change', () => {
+              if (!radio.checked) return;
+              // Leaflet's removeLayer() is a safe no-op if the layer isn't
+              // currently on the map, so we can just always call all three.
+              map.removeLayer(populationDensityLayerLj);
+              map.removeLayer(youthLayer);
+              map.removeLayer(elderlyLayer);
+
+              if (radio.value === 'density') map.addLayer(populationDensityLayerLj);
+              else if (radio.value === 'youth') map.addLayer(youthLayer);
+              else if (radio.value === 'elderly') map.addLayer(elderlyLayer);
+              // 'none' adds nothing back - all three stay off
+
+              updateLegend();
+            });
+          });
+        }
+      }
 
       // ---- Load data (script-tag globals; see head) ----
       // NOTE: window[name] does NOT see top-level const/let declared by another <script> tag
@@ -468,7 +576,7 @@
           }).addTo(populationDensityLayerLj);
           
           // Populate Age layers (Ljubljana only) - LAYERS ALREADY DEFINED IN HTML
-          if (p === 'lj' && typeof populateAgeLayer !== 'undefined' && typeof ageGridData !== 'undefined') {
+          if (p === 'lj' && typeof populateAgeLayer !== 'undefined' && typeof ageGridData !== 'undefined' && typeof LJ_POPULATION_DENSITY !== 'undefined') {
             populateAgeLayer(LJ_POPULATION_DENSITY, youthLayer, getYouthColor, 'pct_p00_14');
             populateAgeLayer(LJ_POPULATION_DENSITY, elderlyLayer, getElderlyColor, 'pct_p65_');
           }
@@ -835,9 +943,21 @@
         });
 
         // Leaflet needs to recompute size after being unhidden.
-        requestAnimationFrame(() => maps[tab].invalidateSize());
+        requestAnimationFrame(() => {
+          maps[tab].invalidateSize();
+          updateLegend(); // Update legend when switching tabs
+        });
       });
     });
+    
+    // Update legend when layers are toggled via Leaflet control
+    setTimeout(() => {
+      const layerCheckboxes = document.querySelectorAll('.leaflet-control-layers-overlays input[type="checkbox"]');
+      layerCheckboxes.forEach(checkbox => {
+        checkbox.addEventListener('change', updateLegend);
+      });
+      updateLegend(); // Initial legend
+    }, 500);
   </script>
 </body>
 </html>
