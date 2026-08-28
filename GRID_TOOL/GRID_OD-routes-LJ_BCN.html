@@ -26,6 +26,10 @@
       // Population Density thresholds and colors
       densityThresholds: [10, 30, 80, 140, 350],
       densityColors: ['#FFFFCC', '#FED976', '#FC4E2A', '#E31A1C', '#BD0026', '#800026'],
+      // Collective accommodation (student halls, institutions) is drawn in a
+      // neutral grey instead of the density ramp - see LJ_COLLECTIVE_CELLS in
+      // lj_population_density.js.
+      collectiveColor: '#9e9e9e',
       
       // Youth (ages 0-14, %) thresholds and colors
       youthThresholds: [15, 17, 21, 23],
@@ -68,41 +72,52 @@
       return c[4];
     }
     
-    // Populate age layers with data from ageGridData
+    // Collective accommodation is excluded from the thematic layers and from
+    // any statistics: a single 2843-person cell is not a residential density.
+    function isCollectiveCell(cellId) {
+      return typeof LJ_COLLECTIVE_CELLS !== 'undefined'
+        && LJ_COLLECTIVE_CELLS.indexOf(cellId) !== -1;
+    }
+
+    // Populate age layers with data from ageGridData.
+    // One L.geoJSON for the whole grid, not one per cell: building ~3800 nested
+    // GeoJSON layers per age layer is what made the Ljubljana tab slow to open.
+    const AGE_FIELD_LABELS = { pct_p00_14: 'Youth 0-14', pct_p65_: 'Elderly 65+' };
+
     function populateAgeLayer(geojson, layerRef, colorFunc, fieldName) {
       if (!layerRef || typeof ageGridData === 'undefined') return;
-      
-      geojson.features.forEach(feature => {
+
+      // Cells suppressed for statistical disclosure are either absent from
+      // ageGridData or carry the -1000001 sentinel. Both mean "no data".
+      const valueOf = (feature) => {
         const cellId = feature.properties.id || feature.properties.ime_celice;
+        if (isCollectiveCell(cellId)) return null;
         const ageData = ageGridData[cellId];
-        
-        if (!ageData) return;
-        
-        const value = ageData[fieldName];
-        if (value === null || value === undefined || value < 0) return;
-        
-        const color = colorFunc(value);
-        
-        const geoLayer = L.geoJSON(feature, {
-          style: {
-            fillColor: color,
-            weight: 0.3,
-            opacity: 0.9,
-            color: '#ccc',
-            fillOpacity: 0.75
-          },
-          onEachFeature: (feat, layer) => {
-            const popup = `<div style="font-size:12px;"><strong>${cellId}</strong><br>${fieldName}: ${value.toFixed(1)}%</div>`;
-            layer.bindPopup(popup);
-            layer.on({
-              mouseover: () => layer.setStyle({ weight: 1, color: '#333', fillOpacity: 0.95 }),
-              mouseout: () => layer.setStyle({ weight: 0.3, color: '#ccc', fillOpacity: 0.75 })
-            });
-          }
-        });
-        
-        layerRef.addLayer(geoLayer);
-      });
+        const value = ageData ? ageData[fieldName] : null;
+        return (typeof value === 'number' && value >= 0) ? value : null;
+      };
+
+      const label = AGE_FIELD_LABELS[fieldName] || fieldName;
+
+      L.geoJSON(geojson, {
+        filter: (feature) => valueOf(feature) !== null,
+        style: (feature) => ({
+          fillColor: colorFunc(valueOf(feature)),
+          weight: 0.3,
+          opacity: 0.9,
+          color: '#ccc',
+          fillOpacity: 0.75
+        }),
+        onEachFeature: (feature, layer) => {
+          const cellId = feature.properties.id || feature.properties.ime_celice;
+          const value = valueOf(feature);
+          layer.bindPopup(`<div style="font-size:12px;"><strong>${cellId}</strong><br>${label}: ${value.toFixed(1)}%</div>`);
+          layer.on({
+            mouseover: () => layer.setStyle({ weight: 1, color: '#333', fillOpacity: 0.95 }),
+            mouseout: () => layer.setStyle({ weight: 0.3, color: '#ccc', fillOpacity: 0.75 })
+          });
+        }
+      }).addTo(layerRef);
     }
     
     // Generate legend HTML from config
@@ -554,10 +569,19 @@
         try {
           L.geoJSON(LJ_POPULATION_DENSITY, {
             style: (feature) => {
-              const pop = feature.properties.pop;
-              const color = getPopulationDensityColor(pop);
+              const props = feature.properties;
+              if (isCollectiveCell(props.id)) {
+                return {
+                  fillColor: window.ageLayersConfig.collectiveColor,
+                  weight: 1,
+                  opacity: 1,
+                  color: '#616161',
+                  dashArray: '3,2',
+                  fillOpacity: 0.6
+                };
+              }
               return {
-                fillColor: color,
+                fillColor: getPopulationDensityColor(props.pop),
                 weight: 0.3,
                 opacity: 0.9,
                 color: '#ccc',
@@ -566,7 +590,9 @@
             },
             onEachFeature: (feature, layer) => {
               const props = feature.properties;
-              const popup = `<div style="font-size:12px;"><strong>${props.id}</strong><br>Population: ${props.pop}<br>Males: ${props.m} | Females: ${props.f}</div>`;
+              const note = isCollectiveCell(props.id)
+                ? '<br><em style="color:#616161">Collective accommodation - excluded from statistics</em>' : '';
+              const popup = `<div style="font-size:12px;"><strong>${props.id}</strong><br>Population: ${props.pop}<br>Males: ${props.m} | Females: ${props.f}${note}</div>`;
               layer.bindPopup(popup);
               layer.on({
                 mouseover: () => layer.setStyle({ weight: 1, color: '#333', fillOpacity: 0.95 }),
