@@ -17,7 +17,7 @@
   h1,.serif { font-family:"Source Serif Pro","Iowan Old Style","Palatino Linotype",Georgia,serif; }
   .mono { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
 
-  #panel { width:230px; flex:0 0 230px; background:var(--card); border:1px solid var(--rule); padding:12px;
+  #panel { width:280px; flex:0 0 280px; background:var(--card); border:1px solid var(--rule); padding:12px;
            max-height:calc(100vh - 44px); overflow-y:auto; position:sticky; top:22px; }
   #panel h1 { font-size:15px; font-weight:600; margin:0 0 2px; letter-spacing:.01em; }
   #panel .sub { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.07em; margin-bottom:13px; }
@@ -296,6 +296,21 @@ function bounds() {
       if (g[i+1] > d) d = g[i+1];
     }
   return [a, b, c, d];
+}
+
+// One-time: on first load, grow the canvas to use more of a large screen (or shrink it to fit
+// a small one), keeping the same aspect ratio the Width/Height fields already specify. This
+// changes the actual figure size (crisp at any size), not a visual stretch — so the legend,
+// scale bar, and attribution text stay their normal fixed size either way.
+function sizeToWindow() {
+  const panelW = $("panel").offsetWidth || 280;
+  const availW = window.innerWidth - panelW - 66;
+  const availH = window.innerHeight - 130;
+  const ratio = (+$("fw").value) / (+$("fh").value);
+  let w = Math.min(availW, availH * ratio);
+  w = Math.max(500, Math.min(1400, w));
+  $("fw").value = Math.round(w);
+  $("fh").value = Math.round(w / ratio);
 }
 
 function fitRaster() {
@@ -598,6 +613,7 @@ function fitView() { fitRaster(); }
 drawCompass();
 buildSwatchGrid();
 buildRefs();
+sizeToWindow();
 fitView();
 </script>
 </body>
