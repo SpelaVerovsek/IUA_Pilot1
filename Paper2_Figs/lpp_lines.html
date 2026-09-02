@@ -299,15 +299,8 @@ function bounds() {
 }
 
 function fitRaster() {
-  const W = +$("fw").value, H = +$("fh").value, pad = 24;
   const [a, b, c, d] = bounds();
-  let z = 18;
-  while (z > 3) {
-    const p1 = px(a, d, z), p2 = px(c, b, z);
-    if (p2[0] - p1[0] <= W - 2 * pad && p2[1] - p1[1] <= H - 2 * pad) break;
-    z--;
-  }
-  view.z = z;
+  view.z = 11.9;
   view.lon = (a + c) / 2;
   view.lat = (b + d) / 2;
   renderRaster();
