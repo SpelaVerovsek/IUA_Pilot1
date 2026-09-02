@@ -11,37 +11,37 @@
   * { box-sizing:border-box; }
   body {
     margin:0; padding:22px; background:#eeece7;
-    font:13px/1.5 "Inter","Helvetica Neue",Arial,sans-serif; color:var(--ink);
+    font:12px/1.45 "Inter","Helvetica Neue",Arial,sans-serif; color:var(--ink);
     display:flex; align-items:flex-start; gap:22px;
   }
   h1,.serif { font-family:"Source Serif Pro","Iowan Old Style","Palatino Linotype",Georgia,serif; }
   .mono { font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
 
-  #panel { width:280px; flex:0 0 280px; background:var(--card); border:1px solid var(--rule); padding:16px;
+  #panel { width:230px; flex:0 0 230px; background:var(--card); border:1px solid var(--rule); padding:12px;
            max-height:calc(100vh - 44px); overflow-y:auto; position:sticky; top:22px; }
-  #panel h1 { font-size:17px; font-weight:600; margin:0 0 2px; letter-spacing:.01em; }
-  #panel .sub { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.07em; margin-bottom:16px; }
+  #panel h1 { font-size:15px; font-weight:600; margin:0 0 2px; letter-spacing:.01em; }
+  #panel .sub { color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.07em; margin-bottom:13px; }
 
-  fieldset { border:0; border-top:1px solid var(--rule); margin:0 0 14px; padding:12px 0 0; }
-  legend { font-size:10.5px; text-transform:uppercase; letter-spacing:.09em; color:var(--muted); padding:0; }
+  fieldset { border:0; border-top:1px solid var(--rule); margin:0 0 11px; padding:10px 0 0; }
+  legend { font-size:9.5px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); padding:0; }
 
-  .row { display:flex; justify-content:space-between; align-items:baseline; margin:6px 0 2px; }
-  .row .lbl { font-size:12px; }
-  .row .val { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
-  .hint { font-size:10.5px; color:var(--muted); margin:0 0 5px; line-height:1.4; }
+  .row { display:flex; justify-content:space-between; align-items:baseline; margin:5px 0 2px; }
+  .row .lbl { font-size:11px; }
+  .row .val { font-size:10px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .hint { font-size:9.5px; color:var(--muted); margin:0 0 4px; line-height:1.35; }
 
   input[type=text], select {
-    font:inherit; padding:5px 7px; border:1px solid var(--rule); background:#fff; background-color:#fff; width:100%; color:var(--ink);
+    font:inherit; padding:4px 6px; border:1px solid var(--rule); background:#fff; background-color:#fff; width:100%; color:var(--ink);
   }
   select { cursor:pointer; }
   select option { background-color:#fff; color:var(--ink); }
   input[type=range] {
-    width:100%; accent-color:var(--accent); height:16px; margin:2px 0 3px; cursor:pointer;
+    width:100%; accent-color:var(--accent); height:14px; margin:1px 0 2px; cursor:pointer;
   }
 
   button {
-    font:12.5px/1 "Inter",sans-serif; padding:7px 10px; border:1px solid var(--ink); background:#fff;
-    cursor:pointer; width:100%; margin-top:6px; color:var(--ink); letter-spacing:.01em;
+    font:11.5px/1 "Inter",sans-serif; padding:6px 9px; border:1px solid var(--ink); background:#fff;
+    cursor:pointer; width:100%; margin-top:5px; color:var(--ink); letter-spacing:.01em;
   }
   button:hover { background:var(--ink); color:#fff; }
   button:disabled { opacity:.4; cursor:not-allowed; }
@@ -52,12 +52,12 @@
   #status { font-size:11px; color:var(--muted); margin-top:10px; font-family:ui-monospace,monospace; }
 
   #refs { max-height:130px; overflow:auto; border:1px solid var(--rule); padding:6px; margin-top:8px; }
-  #refs span { display:inline-block; padding:2px 6px; margin:1px; border:1px solid var(--rule); cursor:pointer; font-size:11.5px; font-family:ui-monospace,monospace; }
+  #refs span { display:inline-block; padding:1px 5px; margin:1px; border:1px solid var(--rule); cursor:pointer; font-size:10.5px; font-family:ui-monospace,monospace; }
   #refs span.on { background:var(--ink); color:#fff; border-color:var(--ink); }
 
   #lineColors { margin:6px 0 4px; }
-  .colorrow { display:flex; justify-content:space-between; align-items:center; padding:3px 0; font-size:12px; }
-  .swbtn { width:22px; height:22px; padding:0; margin:0; border:1px solid var(--rule); border-radius:3px; cursor:pointer; flex-shrink:0; }
+  .colorrow { display:flex; justify-content:space-between; align-items:center; padding:2px 0; font-size:11px; }
+  .swbtn { width:20px; height:20px; padding:0; margin:0; border:1px solid var(--rule); border-radius:3px; cursor:pointer; flex-shrink:0; }
   .swbtn.active { outline:2px solid var(--accent); outline-offset:1px; }
   .swatch-grid { display:none; grid-template-columns:repeat(6, 1fr); gap:5px; margin:8px 0; padding:8px;
                  background:#f6f4ef; border:1px solid var(--rule); max-height:190px; overflow-y:auto; }
@@ -119,13 +119,13 @@
     <legend>Line style</legend>
 
     <div class="row"><span class="lbl">Study line width</span><span class="val" id="wSelVal"></span></div>
-    <input type="range" id="wSel" min="0.4" max="8" step="0.1" value="4.0">
+    <input type="range" id="wSel" min="0.4" max="8" step="0.1" value="3.4">
 
     <div class="row"><span class="lbl">Study line opacity</span><span class="val" id="oSelVal"></span></div>
     <input type="range" id="oSel" min="0.3" max="1" step="0.05" value="1.0">
 
     <div class="row"><span class="lbl">Off-segment width</span><span class="val" id="wRestVal"></span></div>
-    <input type="range" id="wRest" min="0.4" max="8" step="0.1" value="0.8">
+    <input type="range" id="wRest" min="0.4" max="8" step="0.1" value="1.8">
     <div class="hint">Same line, outside the analysed stretch.</div>
 
     <div class="row"><span class="lbl">Off-segment opacity</span><span class="val" id="oRestVal"></span></div>
@@ -133,7 +133,7 @@
     <div class="hint">Same line, outside the analysed stretch.</div>
 
     <div class="row"><span class="lbl">Other lines width</span><span class="val" id="wBaseVal"></span></div>
-    <input type="range" id="wBase" min="0.4" max="8" step="0.1" value="2.3">
+    <input type="range" id="wBase" min="0.4" max="8" step="0.1" value="3.4">
 
     <div class="row"><span class="lbl">Other lines opacity</span><span class="val" id="oBaseVal"></span></div>
     <input type="range" id="oBase" min="0.1" max="1" step="0.05" value="0.25">
