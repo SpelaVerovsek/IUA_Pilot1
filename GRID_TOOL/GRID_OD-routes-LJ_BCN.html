@@ -7,25 +7,61 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.min.js"></script>
+  <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyA60-TwM30jWZjKlFcrxEajuQ_DfF7Iubw"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet.gridlayer.googlemutant@0.16.0/dist/Leaflet.GoogleMutant.js"></script>
   <!-- Data files. Script tags bypass the CORS rule that blocks fetch() on file://. -->
   <script src="linies_metro.js"></script>
   <script src="estacions.js"></script>
   <script src="bcn-eubucco.js"></script>
-  <script src="eubucco-data.js"></script>
+  <script src="lj-eubucco.js"></script>
   <script src="lpp-lines.js"></script>
   <script src="lpp-stops.js"></script>
   <script src="meja_lj_FIXED.js"></script>
   <script src="barcelona_boundary_FIXED.js"></script>
   <script src="lj_population_density.js"></script>
   <script src="lj_age_layers.js"></script>
+  <script src="barcelona_population.js"></script>
+  <script src="lj-traffic-peak.js"></script>
+  <script src="bcn-traffic-peak.js"></script>
   <script>
     // ============================================================================
     // ALL LAYER THRESHOLDS & COLORS DEFINED HERE (Population, Youth, Elderly)
     // ============================================================================
+    const GOOGLE_LIGHT_STYLE=[
+  {elementType:'geometry',stylers:[{color:'#eceae2'}]},
+  {elementType:'labels.icon',stylers:[{visibility:'off'}]},
+  {elementType:'labels.text.fill',stylers:[{color:'#6e6e66'}]},
+  {elementType:'labels.text.stroke',stylers:[{color:'#ffffff'},{weight:2.5}]},
+  {featureType:'administrative.land_parcel',stylers:[{visibility:'off'}]},
+  {featureType:'administrative.neighborhood',stylers:[{visibility:'off'}]},
+  {featureType:'poi',stylers:[{visibility:'off'}]},
+  {featureType:'poi.park',elementType:'geometry',stylers:[{color:'#c9dcc0'}]},
+  {featureType:'landscape.natural',elementType:'geometry',stylers:[{color:'#d7e4cc'}]},
+  {featureType:'landscape.natural.landcover',elementType:'geometry',stylers:[{color:'#cfdfc4'}]},
+  {featureType:'landscape.natural.terrain',elementType:'geometry',stylers:[{color:'#d7e4cc'}]},
+  {featureType:'poi.attraction',elementType:'geometry',stylers:[{color:'#c9dcc0'},{visibility:'on'}]},
+  {featureType:'poi.sports_complex',elementType:'geometry',stylers:[{color:'#c9dcc0'},{visibility:'on'}]},
+  {featureType:'road',elementType:'geometry',stylers:[{color:'#ffffff'}]},
+  {featureType:'road',elementType:'geometry.stroke',stylers:[{color:'#d3d1c6'}]},
+  {featureType:'road.arterial',elementType:'labels.text.fill',stylers:[{color:'#8f8d80'}]},
+  {featureType:'road.highway',elementType:'geometry',stylers:[{color:'#e9e6d9'}]},
+  {featureType:'road.highway',elementType:'geometry.stroke',stylers:[{color:'#c9c6b4'}]},
+  {featureType:'road.highway',elementType:'labels.text.fill',stylers:[{color:'#8a8570'}]},
+  {featureType:'road.local',elementType:'labels',stylers:[{visibility:'off'}]},
+  {featureType:'transit',stylers:[{visibility:'off'}]},
+  {featureType:'water',elementType:'geometry',stylers:[{color:'#c7d3dc'}]},
+  {featureType:'water',elementType:'labels.text.fill',stylers:[{color:'#7c8ba6'}]},
+];
+
     window.ageLayersConfig = {
       // Population Density thresholds and colors
-      densityThresholds: [10, 30, 80, 140, 350],
-      densityColors: ['#FFFFCC', '#FED976', '#FC4E2A', '#E31A1C', '#BD0026', '#800026'],
+      // Shared scale (same breaks in both cities). The first five breaks are the
+      // original ones; 600 and 1000 extend the top for dense Barcelona cells.
+      densityThresholds: [10, 30, 80, 140, 350, 600, 1000],
+      densityColors: ['#FFFFCC', '#FED976', '#FC4E2A', '#E31A1C', '#BD0026', '#800026', '#54278f', '#2d004b'],
+      // City-relative scale: sextiles of each city's own populated cells,
+      // computed at load time (collective accommodation excluded).
+      relativeColors: ['#FFFFCC', '#FED976', '#FC4E2A', '#E31A1C', '#BD0026', '#800026'],
       // Collective accommodation (student halls, institutions) is drawn in a
       // neutral grey instead of the density ramp - see LJ_COLLECTIVE_CELLS in
       // lj_population_density.js.
@@ -41,15 +77,29 @@
     };
     
     // Color functions that read thresholds from config
+    // Class colour for any number of breaks: c has one more entry than t
+    function classColor(value, t, c) {
+      for (let i = 0; i < t.length; i++) if (value <= t[i]) return c[i];
+      return c[t.length];
+    }
+
     function getPopulationDensityColor(value) {
-      const t = window.ageLayersConfig.densityThresholds;
-      const c = window.ageLayersConfig.densityColors;
-      if (value <= t[0]) return c[0];
-      if (value <= t[1]) return c[1];
-      if (value <= t[2]) return c[2];
-      if (value <= t[3]) return c[3];
-      if (value <= t[4]) return c[4];
-      return c[5];
+      return classColor(value, window.ageLayersConfig.densityThresholds, window.ageLayersConfig.densityColors);
+    }
+
+    // n-quantile breaks (n-1 values), rounded, duplicates dropped
+    function quantileBreaks(values, n) {
+      const v = values.slice().sort((a, b) => a - b);
+      const b = [];
+      for (let k = 1; k < n; k++) b.push(Math.round(v[Math.floor(k / n * (v.length - 1))]));
+      return b.filter((x, i) => i === 0 || x > b[i - 1]);
+    }
+
+    function densityLegendHtml(relative, t) {
+      const c = relative ? window.ageLayersConfig.relativeColors : window.ageLayersConfig.densityColors;
+      const labels = t.map((x, i) => i === 0 ? `≤ ${x}` : `${t[i - 1]}–${x}`).concat(`> ${t[t.length - 1]}`);
+      return `<strong>Population Density${relative ? ' (city-relative)' : ''}</strong><br><span style="color:#999; font-size:11px;">people per 100×100m cell${relative ? '; sextiles of this city' : '; shared scale'}</span>` +
+        labels.map((l, i) => `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[i]};border:0.5px solid #999;margin-right:5px;"></div>${l}</div>`).join('');
     }
     
     function getYouthColor(value) {
@@ -143,16 +193,10 @@
       
       let html = '';
       
-      if (densityOn && !youthOn && !elderlyOn) {
-        html = '<strong>Population Density</strong><br><span style="color:#999; font-size:10px;">people per 100×100m cell</span><br>';
-        const t = window.ageLayersConfig.densityThresholds;
-        const c = window.ageLayersConfig.densityColors;
-        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[0]};border:0.5px solid #999;margin-right:5px;"></div>0–${t[0]}</div>`;
-        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[1]};border:0.5px solid #999;margin-right:5px;"></div>${t[0]}–${t[1]}</div>`;
-        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[2]};border:0.5px solid #999;margin-right:5px;"></div>${t[1]}–${t[2]}</div>`;
-        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[3]};border:0.5px solid #999;margin-right:5px;"></div>${t[2]}–${t[3]}</div>`;
-        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[4]};border:0.5px solid #999;margin-right:5px;"></div>${t[3]}–${t[4]}</div>`;
-        html += `<div style="display:flex; margin:3px 0;"><div style="width:10px;height:10px;background:${c[5]};border:0.5px solid #999;margin-right:5px;"></div>${t[4]}+</div>`;
+      if (selected === 'densityRel') {
+        html = densityLegendHtml(true, window.ljRelBreaks || []);
+      } else if (densityOn && !youthOn && !elderlyOn) {
+        html = densityLegendHtml(false, window.ageLayersConfig.densityThresholds);
       } else if (youthOn && !densityOn && !elderlyOn) {
         html = '<strong>Youth (0–14 years; in %)</strong><br>';
         const t = window.ageLayersConfig.youthThresholds;
@@ -185,7 +229,7 @@
 
     .tab-bar { display: flex; align-items: stretch; background: #b0b0b0; flex: 0 0 auto; }
     .tab-btn {
-      padding: 14px 28px; margin: 0; background: #b0b0b0; color: #555; border: none;
+      width: 100%; padding: 14px 28px; margin: 0; background: #b0b0b0; color: #555; border: none; border-radius: 4px; box-shadow: none; transform: none;
       cursor: pointer; font-weight: bold; font-size: 14px; line-height: 1;
     }
     .tab-btn.active { background: #d9534f; color: white; }
@@ -195,19 +239,28 @@
     .tab-panel { position: absolute; inset: 0; display: none; }
     .tab-panel.active { display: block; }
 
-    .container { display: grid; grid-template-columns: 280px 1fr; height: 100%; }
-    .sidebar { background: white; padding: 1.5rem; overflow-y: auto; border-right: 1px solid #ddd; }
+    .container { display: grid; grid-template-columns: 240px 1fr; height: 100%; }
+    .sidebar { user-select: none; background: white; padding: 1rem; overflow-y: auto; border-right: 1px solid #ddd; }
+    .sidebar h1 { font-size: 18px; margin: 0 0 0.8rem; }
     .map { position: relative; height: 100%; }
-    .sidebar label { font-size: 13px; color: #666; margin: 0.5rem 0; display: block; font-weight: 500; }
-    .sidebar input, .sidebar select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 1rem; }
-    .loading-note { font-size: 11px; color: #999; margin-bottom: 1rem; padding: 6px; background: #f0f0f0; border-radius: 3px; }
-    button { width: 100%; padding: 8px; border: none; border-radius: 4px; cursor: pointer; margin-bottom: 1rem; font-weight: bold; color: white; }
-    button.primary { background: #d9534f; }
-    button.success { background: #27ae60; }
+    .sidebar label { font-size: 12px; color: #666; margin: 0.3rem 0; display: block; font-weight: 500; }
+    .sidebar input, .sidebar select { width: 100%; padding: 4px 0; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 0.6rem; }
+    .loading-note { font-size: 12px; color: #999; margin-bottom: 1rem; padding: 6px; background: #f0f0f0; border-radius: 3px; }
+    button { width: 100%; padding: 4px 6px; border: 1px solid #e9b1ae; border-radius: 3px; cursor: pointer; margin-bottom: 0.4rem; font-weight: 500; font-size: 12px; color: #a8322e; background: #fcefee; box-shadow: 0 1px 1px rgba(0,0,0,0.08); }
+    button:hover { background: #f8dedc; border-color: #df9995; }
+    button:active { box-shadow: none; transform: translateY(1px); }
+    button.on { background: #eceef0; border-color: #4a5058; color: #2f3439; }   /* active mode: light graphite */
+    .sidebar .sec { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #d9534f; border-top: 1px solid #eee; padding-top: 0.6rem; margin: 0.9rem 0 0.2rem; }
+    .sidebar .val { font-size: 12px; color: #999; margin-bottom: 0.6rem; }
+    /* Fine sliders: thin track, small thumb */
+    .sidebar input[type=range] { -webkit-appearance: none; appearance: none; height: 3px; padding: 0; border: none; border-radius: 2px; background: #e6e6e6; margin: 6px 0 0.4rem; }
+    .sidebar input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 11px; height: 11px; border-radius: 50%; background: #d9534f; border: none; cursor: pointer; }
+    .sidebar input[type=range]::-moz-range-thumb { width: 11px; height: 11px; border-radius: 50%; background: #d9534f; border: none; cursor: pointer; }
 
     /* Smaller default font for the Leaflet layers control panel */
-    .leaflet-control-layers { font-size: 11px; }
+    .leaflet-control-layers { font-size: 12px; }
     .leaflet-control-layers label { margin: 2px 0; }
+    .leaflet-control-layers-base::before { content: 'Base maps'; display: block; font-weight: bold; margin-bottom: 2px; }
 
     /* Kill Leaflet's default divIcon white box + grey border */
     .leaflet-div-icon,
@@ -235,36 +288,34 @@
           <div class="sidebar">
             <h1>Barcelona OD Routes</h1>
 
+            <div class="sec">Display</div>
             <label>Display mode:</label>
-            <button id="bcn-modeToggle" class="primary">Basemap + Thematic Layers</button>
-
+            <button id="bcn-modeToggle">Basemap + Thematic Layers</button>
             <label>Map opacity:</label>
-            <input type="range" id="bcn-mapOpacity" min="0.2" max="1" step="0.1" value="1" style="margin-bottom: 0.3rem;">
-            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="bcn-opacity-val">100</span>%</div>
+            <input type="range" id="bcn-mapOpacity" min="0.2" max="1" step="0.1" value="1">
+            <div class="val"><span id="bcn-opacity-val">100</span>%</div>
 
-            <label>Grid circles:</label>
-            <input type="range" id="bcn-circles" min="2" max="8" value="3" style="margin-bottom: 0.3rem;">
-            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="bcn-circles-val">3</span> rings</div>
-
-            <label>Grid sectors:</label>
-            <input type="range" id="bcn-sectors" min="8" max="24" step="2" value="12" style="margin-bottom: 0.3rem;">
-            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="bcn-sectors-val">12</span> divisions</div>
-
+            <div class="sec">Grid</div>
+            <label>Center:</label>
+            <button id="bcn-setGridCenterBtn">Click Map to Set Center</button>
+            <div class="val">Current: <span id="bcn-gridCenterDisplay">Origin</span></div>
+            <label>Circles:</label>
+            <input type="range" id="bcn-circles" min="2" max="8" value="3">
+            <div class="val"><span id="bcn-circles-val">3</span> rings</div>
+            <label>Sectors:</label>
+            <input type="range" id="bcn-sectors" min="8" max="24" step="2" value="12">
+            <div class="val"><span id="bcn-sectors-val">12</span> divisions</div>
             <label>Scale (km):</label>
-            <input type="range" id="bcn-scale" min="2" max="20" value="10" style="margin-bottom: 0.3rem;">
-            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="bcn-scale-val">10</span> km</div>
-
+            <input type="range" id="bcn-scale" min="2" max="20" value="10">
+            <div class="val"><span id="bcn-scale-val">10</span> km</div>
             <label>Rotation:</label>
-            <input type="range" id="bcn-rotation" min="0" max="360" value="0" style="margin-bottom: 0.3rem;">
-            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="bcn-rotation-val">0</span>°</div>
+            <input type="range" id="bcn-rotation" min="0" max="360" value="0">
+            <div class="val"><span id="bcn-rotation-val">0</span>°</div>
+            <button id="bcn-adjustGridBtn">Adjust Grid Segments</button>
 
-            <label>Grid center:</label>
-            <button id="bcn-setGridCenterBtn" class="primary">Click Map to Set Center</button>
-            <button id="bcn-resetDestinationsBtn" class="success">Reset All (Origin + Routes)</button>
-            <button id="bcn-adjustGridBtn" class="info">Adjust Grid Segments</button>
-            <div style="font-size: 12px; color: #999; margin-bottom: 1rem; padding: 8px; background: #f9f9f9; border-radius: 4px;">
-              <strong>Current:</strong> <span id="bcn-gridCenterDisplay">Origin</span>
-            </div>
+            <div class="sec">Routes</div>
+            <button id="bcn-routeColorBtn">Routes: Black</button>
+            <button id="bcn-resetDestinationsBtn">Reset All (Origin + Routes)</button>
 
             <div class="loading-note" id="bcn-loadingStatus">Loading data...</div>
           </div>
@@ -278,36 +329,34 @@
           <div class="sidebar">
             <h1>Ljubljana OD Routes</h1>
 
+            <div class="sec">Display</div>
             <label>Display mode:</label>
-            <button id="lj-modeToggle" class="primary">Basemap + Thematic Layers</button>
-
+            <button id="lj-modeToggle">Basemap + Thematic Layers</button>
             <label>Map opacity:</label>
-            <input type="range" id="lj-mapOpacity" min="0.2" max="1" step="0.1" value="1" style="margin-bottom: 0.3rem;">
-            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="lj-opacity-val">100</span>%</div>
+            <input type="range" id="lj-mapOpacity" min="0.2" max="1" step="0.1" value="1">
+            <div class="val"><span id="lj-opacity-val">100</span>%</div>
 
-            <label>Grid circles:</label>
-            <input type="range" id="lj-circles" min="2" max="8" value="3" style="margin-bottom: 0.3rem;">
-            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="lj-circles-val">3</span> rings</div>
-
-            <label>Grid sectors:</label>
-            <input type="range" id="lj-sectors" min="8" max="24" step="2" value="12" style="margin-bottom: 0.3rem;">
-            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="lj-sectors-val">12</span> divisions</div>
-
+            <div class="sec">Grid</div>
+            <label>Center:</label>
+            <button id="lj-setGridCenterBtn">Click Map to Set Center</button>
+            <div class="val">Current: <span id="lj-gridCenterDisplay">Origin</span></div>
+            <label>Circles:</label>
+            <input type="range" id="lj-circles" min="2" max="8" value="3">
+            <div class="val"><span id="lj-circles-val">3</span> rings</div>
+            <label>Sectors:</label>
+            <input type="range" id="lj-sectors" min="8" max="24" step="2" value="12">
+            <div class="val"><span id="lj-sectors-val">12</span> divisions</div>
             <label>Scale (km):</label>
-            <input type="range" id="lj-scale" min="2" max="20" value="10" style="margin-bottom: 0.3rem;">
-            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="lj-scale-val">10</span> km</div>
-
+            <input type="range" id="lj-scale" min="2" max="20" value="10">
+            <div class="val"><span id="lj-scale-val">10</span> km</div>
             <label>Rotation:</label>
-            <input type="range" id="lj-rotation" min="0" max="360" value="0" style="margin-bottom: 0.3rem;">
-            <div style="font-size: 12px; color: #999; margin-bottom: 1rem;"><span id="lj-rotation-val">0</span>°</div>
+            <input type="range" id="lj-rotation" min="0" max="360" value="0">
+            <div class="val"><span id="lj-rotation-val">0</span>°</div>
+            <button id="lj-adjustGridBtn">Adjust Grid Segments</button>
 
-            <label>Grid center:</label>
-            <button id="lj-setGridCenterBtn" class="primary">Click Map to Set Center</button>
-            <button id="lj-resetDestinationsBtn" class="success">Reset All (Origin + Routes)</button>
-            <button id="lj-adjustGridBtn" class="info">Adjust Grid Segments</button>
-            <div style="font-size: 12px; color: #999; margin-bottom: 1rem; padding: 8px; background: #f9f9f9; border-radius: 4px;">
-              <strong>Current:</strong> <span id="lj-gridCenterDisplay">Origin</span>
-            </div>
+            <div class="sec">Routes</div>
+            <button id="lj-routeColorBtn">Routes: Black</button>
+            <button id="lj-resetDestinationsBtn">Reset All (Origin + Routes)</button>
 
             <div class="loading-note" id="lj-loadingStatus">Loading data...</div>
           </div>
@@ -315,7 +364,7 @@
             <!-- Legend Panel - Inside Map -->
             <div id="legend-panel" style="position: absolute; left: 20px; bottom: 20px; width: 220px; background: white; border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 999; padding: 12px; display: none; max-height: 300px; overflow-y: auto;">
               <div style="font-weight: bold; margin-bottom: 8px; font-size: 12px;">Legend</div>
-              <div id="legend-content" style="font-size: 11px; color: #999;">Select a layer</div>
+              <div id="legend-content" style="font-size: 12px; color: #999;">Select a layer</div>
             </div>
           </div>
         </div>
@@ -343,11 +392,13 @@
       // ---- Map + basemaps ----
       const map = L.map(id('map')).setView([origin.lat, origin.lng], 13);
 
-      const map1 = L.tileLayer('https://basemaps.cartocdn.com/rastertiles/light_nolabels/{z}/{x}/{y}.png?key=cb1_2che_1_9a517cca90f919632c8a6a8c', { attribution: '© CartoDB' });
+      const map1 = L.tileLayer('https://basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}.png?key=cb1_2che_1_9a517cca90f919632c8a6a8c', { attribution: '© CartoDB' });
       const map2 = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', { attribution: '© Esri' });
       const map3 = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { attribution: '© OpenTopoMap' });
       const map4 = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}', { attribution: '© Esri Topo' });
-      const baseMaps = { 'Light': map1, 'Street': map2, 'OpenTopo': map3, 'World Topo': map4 };
+      // Google basemap, same light style as PT_analysis_LJ_BCN_google.html
+      const map5 = L.gridLayer.googleMutant({ type: 'roadmap', styles: GOOGLE_LIGHT_STYLE });
+      const baseMaps = { 'Light': map1, 'Google': map5, 'Street': map2, 'OpenTopo': map3, 'World Topo': map4 };
       map1.addTo(map);
 
       // ---- Layer groups ----
@@ -367,11 +418,28 @@
       const boundariesLayer = L.layerGroup().addTo(map);
       overlayMaps['City Boundaries'] = boundariesLayer;
 
+      // ---- Density scale state (shared vs city-relative) ----
+      let densityMode = 'shared';
+      let relBreaks = [];
+      let densityGeo = null;      // Ljubljana L.geoJSON
+      const bcnCells = [];        // Barcelona polygons
+      let bcnLegend = null;
+      const densityColor = (pop) => densityMode === 'rel'
+        ? classColor(pop, relBreaks, window.ageLayersConfig.relativeColors)
+        : getPopulationDensityColor(pop);
+      function setDensityMode(mode) {
+        if (mode === densityMode) return;
+        densityMode = mode;
+        if (densityGeo) densityGeo.setStyle(densityGeo.options.style);
+        bcnCells.forEach(c => c.setStyle({ fillColor: densityColor(c.pop) }));
+        if (bcnLegend && map.hasLayer(populationDensityLayerBcn)) { bcnLegend.remove(); bcnLegend.addTo(map); }
+      }
+
       // ---- Population Density Layer (Barcelona) ----
       let populationDensityLayerBcn = null;
       if (p === 'bcn') {
-        populationDensityLayerBcn = L.layerGroup();
-        overlayMaps['Population Density'] = populationDensityLayerBcn;
+        // Own radio group below (like Ljubljana); ON by default
+        populationDensityLayerBcn = L.layerGroup().addTo(map);
       }
 
       // ---- Population Density Layer (Ljubljana) - ON BY DEFAULT ----
@@ -392,7 +460,82 @@
         elderlyLayer = L.layerGroup();
       }
 
+      // ---- Traffic snapshot (afternoon peak) ----
+      // Added before the control is built: addOverlay() later would rebuild
+      // the overlays list and wipe the custom Population radio group.
+      const trafficData = cfg.trafficVar ? safeGlobal(cfg.trafficVar) : undefined;
+      // Missing or old GeoJSON-format traffic files are skipped instead of
+      // stopping the whole map; the status box below says which one.
+      const trafficFile = cfg.prefix + '-traffic-peak.js';
+      const trafficNote = !cfg.trafficVar || Array.isArray(trafficData) ? null
+        : trafficData ? trafficFile + ' (old format, download again)' : trafficFile;
+      if (Array.isArray(trafficData)) {
+        const trafficPeakLayer = L.layerGroup();
+        // Same classification as flow_map_template.html (speed / free-flow ratio).
+        const tCol = s => s[7] ? '#1d2329' : (s[4] < 5 || !s[3]) ? '#b5bcc3'
+          : s[3] / s[4] >= 0.9 ? '#2f9e6f' : s[3] / s[4] >= 0.75 ? '#b9c33a' : s[3] / s[4] >= 0.5 ? '#ec9a29' : '#d1373f';
+        const tW = fc => [0, 5, 4, 3, 2, 1.4][fc] || 1.4;
+        trafficData.slice().sort((a, b) => b[1] - a[1]).forEach(s => {   // minor roads first, major on top
+          L.polyline(s[8], { color: tCol(s), weight: tW(s[1]), opacity: 0.9, dashArray: s[7] ? '4 3' : null })
+            .bindPopup(`<strong>${s[0]}</strong><br>` + (s[7] ? 'Closed'
+              : `Speed ${s[3]} km/h, free-flow ${s[4]} km/h<br>Speed / free-flow ${s[3] && s[4] ? Math.round(s[3] / s[4] * 100) + ' %' : '–'}<br>Jam factor ${s[5]}`))
+            .addTo(trafficPeakLayer);
+        });
+
+        // Basic legend, shown only while the traffic layer is on
+        const trafficLegend = L.control({ position: 'bottomright' });
+        trafficLegend.onAdd = () => {
+          const div = L.DomUtil.create('div');
+          div.style.cssText = 'background:white; padding:10px 12px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); font-size:12px;';
+          const items = [['#2f9e6f', '≥ 90 %'], ['#b9c33a', '75–90 %'], ['#ec9a29', '50–75 %'], ['#d1373f', '< 50 %'], ['#b5bcc3', 'Pedestrian / no data']];
+          div.innerHTML = `<strong>${cfg.trafficLabel}</strong><br><span style="color:#999; font-size:11px;">speed / free-flow</span>` +
+            items.map(([c, l]) => `<div style="display:flex; align-items:center; margin:3px 0;"><div style="width:16px;height:3px;background:${c};margin-right:6px;"></div>${l}</div>`).join('') +
+            '<div style="display:flex; align-items:center; margin:3px 0;"><div style="width:16px;height:0;border-top:3px dashed #1d2329;margin-right:6px;"></div>Closed</div>';
+          return div;
+        };
+        trafficPeakLayer.on('add', () => trafficLegend.addTo(map));
+        trafficPeakLayer.on('remove', () => trafficLegend.remove());
+        overlayMaps[cfg.trafficLabel] = trafficPeakLayer;
+      }
+
       let layersControl = L.control.layers(baseMaps, overlayMaps).addTo(map);
+
+      // Leaflet rebuilds the overlays list whenever a basemap is added/removed
+      // in code (e.g. the Display mode button). Re-attach the custom Population
+      // group after every rebuild, so it does not disappear.
+      const extraOverlayEls = [];
+      const rebuildOverlays = layersControl._update;
+      layersControl._update = function () {
+        rebuildOverlays.call(this);
+        extraOverlayEls.forEach(e => this._overlaysList.appendChild(e));
+        return this;
+      };
+
+      // ---- Population radio group (Barcelona): density only, no age data ----
+      if (p === 'bcn') {
+        const overlaysList = document.querySelector('#bcn-map .leaflet-control-layers-overlays');
+        if (overlaysList) {
+          const name = 'bcn-thematic-' + Date.now();
+          const wrap = document.createElement('div');
+          wrap.style.cssText = 'border-top:1px solid #ddd; margin-top:6px; padding-top:6px;';
+          wrap.innerHTML = `
+            <div style="font-weight:bold; margin-bottom:2px;">Population</div>
+            <label style="display:block; margin-left:10px;"><input type="radio" name="${name}" value="density" checked> Density (shared scale)</label>
+            <label style="display:block; margin-left:10px;"><input type="radio" name="${name}" value="densityRel"> Density (city-relative)</label>
+            <label style="display:block; margin-left:10px;"><input type="radio" name="${name}" value="none"> None</label>
+          `;
+          overlaysList.appendChild(wrap);
+          extraOverlayEls.push(wrap);
+          wrap.querySelectorAll('input[type="radio"]').forEach(radio => {
+            radio.addEventListener('change', () => {
+              if (!radio.checked) return;
+              if (radio.value === 'none') { map.removeLayer(populationDensityLayerBcn); return; }
+              setDensityMode(radio.value === 'densityRel' ? 'rel' : 'shared');
+              map.addLayer(populationDensityLayerBcn);
+            });
+          });
+        }
+      }
 
       // ---- Custom radio group for the three thematic layers (Ljubljana only) ----
       // Native <input type="radio"> with a shared "name" is mutually exclusive
@@ -408,12 +551,14 @@
           wrap.style.paddingTop = '6px';
           wrap.innerHTML = `
             <div style="font-weight:bold; margin-bottom:2px;">Population</div>
-            <label style="display:block; margin-left:10px;"><input type="radio" name="${radioGroupName}" value="density" checked> Density</label>
+            <label style="display:block; margin-left:10px;"><input type="radio" name="${radioGroupName}" value="density" checked> Density (shared scale)</label>
+            <label style="display:block; margin-left:10px;"><input type="radio" name="${radioGroupName}" value="densityRel"> Density (city-relative)</label>
             <label style="display:block; margin-left:10px;"><input type="radio" name="${radioGroupName}" value="youth"> Youth (0–14 years; in %)</label>
             <label style="display:block; margin-left:10px;"><input type="radio" name="${radioGroupName}" value="elderly"> Elderly (65+ years; in %)</label>
             <label style="display:block; margin-left:10px;"><input type="radio" name="${radioGroupName}" value="none"> None</label>
           `;
           overlaysList.appendChild(wrap);
+          extraOverlayEls.push(wrap);
 
           wrap.querySelectorAll('input[type="radio"]').forEach(radio => {
             radio.addEventListener('change', () => {
@@ -424,7 +569,10 @@
               map.removeLayer(youthLayer);
               map.removeLayer(elderlyLayer);
 
-              if (radio.value === 'density') map.addLayer(populationDensityLayerLj);
+              if (radio.value === 'density' || radio.value === 'densityRel') {
+                setDensityMode(radio.value === 'densityRel' ? 'rel' : 'shared');
+                map.addLayer(populationDensityLayerLj);
+              }
               else if (radio.value === 'youth') map.addLayer(youthLayer);
               else if (radio.value === 'elderly') map.addLayer(elderlyLayer);
               // 'none' adds nothing back - all three stay off
@@ -469,6 +617,7 @@
 
       const status = el('loadingStatus');
       const missing = [];
+      if (trafficNote) missing.push(trafficNote);
       const parts = [];
 
       if (cfg.transit) {
@@ -510,7 +659,8 @@
 
       if (typeof buildingsData !== 'undefined') {
         L.geoJSON(buildingsData, {
-          style: { color: '#f39c12', weight: 0.5, opacity: 0.9, fillOpacity: 0.7 },
+          renderer: L.canvas(), // full-detail footprints: too many for SVG
+          style: { color: '#f39c12', weight: 0.5, opacity: 0.9, fillOpacity: 0.7, fillRule: 'nonzero' }, // nonzero: rounded, self-crossing rings would otherwise show white triangles
           onEachFeature: (feature, layer) => {
             const props = feature.properties || {};
             const h = props.h !== undefined ? props.h : props.height;
@@ -564,10 +714,48 @@
         }
       }
 
-      // ---- Load Population Density (Ljubljana only for now) ----
+      // ---- Load Population Density (Barcelona) ----
+      // INE 2026 100 m grid; rows are [SW, SE, NE, NW, population].
+      // Canvas renderer: ~23k cells are too many for SVG.
+      if (p === 'bcn' && populationDensityLayerBcn && typeof barcelonaPopulation !== 'undefined') {
+        relBreaks = quantileBreaks(barcelonaPopulation.map(r => r[4]).filter(v => v > 0), 6);
+        const canvas = L.canvas();
+        barcelonaPopulation.forEach(r => {
+          const pop = r[4];
+          const cell = L.polygon(r.slice(0, 4), {
+            renderer: canvas,
+            fillColor: densityColor(pop),
+            weight: 0.3, opacity: 0.9, color: '#ccc', fillOpacity: 0.75
+          }).bindPopup(`<div style="font-size:12px;">Population: ${pop}</div>`)
+            .addTo(populationDensityLayerBcn);
+          cell.pop = pop;
+          bcnCells.push(cell);
+        });
+
+        bcnLegend = L.control({ position: 'bottomleft' });
+        bcnLegend.onAdd = () => {
+          const div = L.DomUtil.create('div');
+          div.style.cssText = 'background:white; padding:10px 12px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); font-size:12px;';
+          div.innerHTML = densityLegendHtml(densityMode === 'rel', densityMode === 'rel' ? relBreaks : window.ageLayersConfig.densityThresholds);
+          return div;
+        };
+        populationDensityLayerBcn.on('add', () => bcnLegend.addTo(map));
+        populationDensityLayerBcn.on('remove', () => bcnLegend.remove());
+        if (map.hasLayer(populationDensityLayerBcn)) bcnLegend.addTo(map);
+
+        parts.push(`${barcelonaPopulation.length} population cells`);
+      } else if (p === 'bcn') {
+        missing.push('barcelona_population.js');
+      }
+
+      // ---- Load Population Density (Ljubljana) ----
       if (p === 'lj' && populationDensityLayerLj && typeof LJ_POPULATION_DENSITY !== 'undefined') {
         try {
-          L.geoJSON(LJ_POPULATION_DENSITY, {
+          relBreaks = quantileBreaks(LJ_POPULATION_DENSITY.features
+            .filter(f => !isCollectiveCell(f.properties.id) && f.properties.pop > 0)
+            .map(f => f.properties.pop), 6);
+          window.ljRelBreaks = relBreaks;
+          densityGeo = L.geoJSON(LJ_POPULATION_DENSITY, {
             style: (feature) => {
               const props = feature.properties;
               if (isCollectiveCell(props.id)) {
@@ -581,7 +769,7 @@
                 };
               }
               return {
-                fillColor: getPopulationDensityColor(props.pop),
+                fillColor: densityColor(props.pop),
                 weight: 0.3,
                 opacity: 0.9,
                 color: '#ccc',
@@ -732,19 +920,26 @@
         }
       }
 
+      // Routes + markers colour, toggled by routeColorBtn
+      let routeColor = '#111111';
+
       function drawRoutes() {
         routeGroup.clearLayers();
+        if (!routeColor) return;   // routes switched off
         destinations.forEach(dest => {
-          L.polyline([origin, dest], { color: '#d9534f', weight: 3, opacity: 0.8, pane: id('routes') }).addTo(routeGroup);
+          // White casing under a dark line: stays readable over the red density cells
+          L.polyline([origin, dest], { color: '#ffffff', weight: 5, opacity: 0.9, pane: id('routes'), interactive: false }).addTo(routeGroup);
+          L.polyline([origin, dest], { color: routeColor, weight: 2.5, opacity: 1, pane: id('routes') }).addTo(routeGroup);
         });
       }
 
       function drawMarkers() {
         markerGroup.clearLayers();
+        if (!routeColor) return;   // routes switched off
 
         destinations.forEach((dest, idx) => {
           const icon = L.divIcon({
-            html: `<div style="width:16px;height:16px;display:flex;align-items:center;justify-content:center;background:#d9534f;color:white;border-radius:50%;font-weight:bold;font-size:9px;border:1px solid white;box-shadow:0 2px 3px rgba(0,0,0,0.3);">${idx + 1}</div>`,
+            html: `<div style="width:16px;height:16px;display:flex;align-items:center;justify-content:center;background:${routeColor};color:white;border-radius:50%;font-weight:bold;font-size:9px;border:1px solid white;box-shadow:0 2px 3px rgba(0,0,0,0.3);">${idx + 1}</div>`,
             iconSize: [16, 16], iconAnchor: [8, 8], className: 'marker-icon', popupAnchor: [0, -10]
           });
           const marker = L.marker(dest, { icon, pane: id('markers'), draggable: true }).addTo(markerGroup);
@@ -757,7 +952,7 @@
         });
 
         const originIcon = L.divIcon({
-          html: `<div style="width:8px;height:8px;background:#d9534f;border-radius:50%;border:1px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.3);"></div>`,
+          html: `<div style="width:8px;height:8px;background:${routeColor};border-radius:50%;border:1px solid white;box-shadow:0 1px 2px rgba(0,0,0,0.3);"></div>`,
           iconSize: [8, 8], iconAnchor: [4, 4], className: 'origin-icon', popupAnchor: [0, -5]
         });
         const originMarker = L.marker(origin, { icon: originIcon, pane: id('markers'), draggable: true }).addTo(markerGroup);
@@ -790,11 +985,11 @@
         const btn = el('setGridCenterBtn');
         if (selectingGridCenter) {
           btn.textContent = 'Click on map...';
-          btn.style.background = '#666';
+          btn.classList.add('on');
           map.dragging.disable();
         } else {
           btn.textContent = 'Click Map to Set Center';
-          btn.style.background = '#d9534f';
+          btn.classList.remove('on');
           map.dragging.enable();
           if (tempMarker) { markerGroup.removeLayer(tempMarker); tempMarker = null; }
         }
@@ -807,10 +1002,18 @@
           el('gridCenterDisplay').textContent = `${gridCenter.lat.toFixed(4)}°, ${gridCenter.lng.toFixed(4)}°`;
           selectingGridCenter = false;
           el('setGridCenterBtn').textContent = 'Click Map to Set Center';
-          el('setGridCenterBtn').style.background = '#d9534f';
+          el('setGridCenterBtn').classList.remove('on');
           map.dragging.enable();
           update();
         }
+      });
+
+      el('routeColorBtn').addEventListener('click', () => {
+        // Cycle: Black -> Red -> Off -> Black
+        routeColor = routeColor === '#111111' ? '#d9534f' : routeColor === '#d9534f' ? null : '#111111';
+        el('routeColorBtn').textContent = routeColor === '#111111' ? 'Routes: Black' : routeColor ? 'Routes: Red' : 'Routes: Off';
+        drawRoutes();
+        drawMarkers();
       });
 
       el('adjustGridBtn').addEventListener('click', () => {
@@ -818,13 +1021,11 @@
         const btn = el('adjustGridBtn');
         if (adjustingGrid) {
           btn.textContent = 'Done Adjusting';
-          btn.style.background = '#1a7db8';
-          btn.style.color = 'white';
+          btn.classList.add('on');
           segmentLayer.addTo(map);
         } else {
           btn.textContent = 'Adjust Grid Segments';
-          btn.style.background = '';
-          btn.style.color = '';
+          btn.classList.remove('on');
           map.removeLayer(segmentLayer);
         }
         drawGrid();
@@ -853,16 +1054,16 @@
         nightMode = !nightMode;
         const btn = el('modeToggle');
         if (nightMode) {
-          [map1, map2, map3, map4].forEach(m => map.removeLayer(m));
+          [map1, map2, map3, map4, map5].forEach(m => map.removeLayer(m));
           darkBg.addTo(map);
           darkBg.bringToBack();
           btn.textContent = 'Thematic Layers Only';
-          btn.style.background = '#34495e';
+          btn.classList.add('on');
         } else {
           darkBg.remove();
           map1.addTo(map);
           btn.textContent = 'Basemap + Thematic Layers';
-          btn.style.background = '#d9534f';
+          btn.classList.remove('on');
         }
       });
 
@@ -873,12 +1074,22 @@
 
       el('mapOpacity').addEventListener('input', (e) => {
         const opacity = parseFloat(e.target.value);
-        [map1, map2, map3, map4].forEach(m => m.setOpacity(opacity));
+        [map1, map2, map3, map4, map5].forEach(m => m.setOpacity(opacity));
         el('opacity-val').textContent = Math.round(opacity * 100);
       });
 
       map.on('zoom', update);
       map.on('move', update);
+
+      // Slider fill up to the handle
+      document.querySelectorAll(`#panel-${p} .sidebar input[type=range]`).forEach(r => {
+        const fill = () => {
+          const pct = (r.value - r.min) / (r.max - r.min) * 100;
+          r.style.background = `linear-gradient(to right, #f4c2bf ${pct}%, #e6e6e6 ${pct}%)`;
+        };
+        r.addEventListener('input', fill);
+        fill();
+      });
 
       // ---- Init ----
       el('gridCenterDisplay').textContent = `${gridCenter.lat.toFixed(4)}°, ${gridCenter.lng.toFixed(4)}°`;
@@ -919,7 +1130,9 @@
       buildingsVar: 'bcnEubuccoData',
       buildingsFile: 'bcn-eubucco.js',
       boundaryVar: 'barcelonaBoundaryData',
-      boundaryFile: 'barcelona_boundary_FIXED.js'
+      boundaryFile: 'barcelona_boundary_FIXED.js',
+      trafficVar: 'bcnTrafficPeak',
+      trafficLabel: 'Traffic: Tue afternoon peak (20 Oct 2026, 15:45)'
     });
 
     // ==================== LJUBLJANA ====================
@@ -951,10 +1164,12 @@
         stopBorder: '#2980b9',
         stopPopup: (p) => `<strong>${p.name}</strong>${p.code ? '<br>Stop ' + p.code : ''}`
       },
-      buildingsVar: 'eubuccoData',
-      buildingsFile: 'eubucco-data.js',
+      buildingsVar: 'ljEubuccoData',
+      buildingsFile: 'lj-eubucco.js',
       boundaryVar: 'mejaLjData',
-      boundaryFile: 'meja_lj_FIXED.js'
+      boundaryFile: 'meja_lj_FIXED.js',
+      trafficVar: 'ljTrafficPeak',
+      trafficLabel: 'Traffic: Tue afternoon peak (20 Oct 2026, 15:31)'
     });
 
     // ==================== TAB SWITCHING ====================
