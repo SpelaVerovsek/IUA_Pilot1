@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OD Routes</title>
+  <title>OD Routes v2 demo</title>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.min.js"></script>
@@ -23,6 +23,9 @@
   <script src="barcelona_population.js"></script>
   <script src="lj-traffic-peak.js"></script>
   <script src="bcn-traffic-peak.js"></script>
+  <!-- Optional: area enclosed by the outer ring road, saved with "Copy Ring Road as File" -->
+  <script src="bcn_ring_road.js"></script>
+  <script src="lj_ring_road.js"></script>
   <script>
     // ============================================================================
     // ALL LAYER THRESHOLDS & COLORS DEFINED HERE (Population, Youth, Elderly)
@@ -219,6 +222,386 @@
       
       legendContent.innerHTML = html || 'Select one layer';
     }
+
+    // ============================================================================
+    // SEGMENT SAMPLING (automated OD; runs next to the manual OD set, never modifies it)
+    // 1. Build Sampling Frame: grid segments passing all criteria turn green. They
+    //    fill the same set the "Adjust Grid Segments" tool edits, so the frame can
+    //    be corrected by hand afterwards.
+    // 2. Pick O/D Segments: a click in either city selects the analogous segment
+    //    (same sector and ring index) in both cities; each selected segment gets a
+    //    random point on built-up land inside it.
+    // ============================================================================
+    const FRAME_CFG = {
+      step: 100,          // m, sampling lattice (also building and stop bins)
+      // Eligibility gates (fail one = excluded), then segment type:
+      // gate 1: share of segment area within the city border >= minInside
+      // gate 2: built intensity (floor space density, EUBUCCO) >= minFloor x city average
+      // gate 3: share of segment area within the ring road >= minRing (optional: 0 = off; skipped in a city without a ring road)
+      // type:   residential if population density >= minDensity x city average, else non-residential
+      // Averages are city averages inside the border. PT is orientation only, never used to select.
+      minInside: 0.3,     // share of a segment inside the city border
+      minFloor: 0.25,     // EUBUCCO floor area density relative to the city's mean
+      storey: 3,          // m per storey, to turn EUBUCCO height into floors
+      minRing: 0,         // share of a segment inside the outer ring road; 0 = criterion off
+      minDensity: 0.5,    // segment population density relative to the city's mean density
+      binCoverage: 0.05,  // a 100 m bin counts as built-up from 5 % footprint coverage
+      stopRange: 500,     // m, for the reported PT share
+      maxShift: 1,        // sectors a pick may shift in a city where its segment is not eligible
+      color: '#6b4f9e'
+    };
+    const CITY_AUTO = {};                         // per-city samplers, keyed by prefix
+    // Shared by both cities: segment ids, whether the origin is fixed, picking on/off.
+    const OD_SEGS = { origin: null, fixed: false, dests: [], picking: false };
+
+    // Same geometry as drawGrid(): bearing 0 = north, clockwise; segId = sector * circles + ring.
+    function segmentOf(lat, lng, c, g) {
+      const dy = lat - c.lat, dx = (lng - c.lng) * Math.cos(c.lat * Math.PI / 180);
+      const ring = Math.floor(Math.hypot(dx, dy) * 111 / (g.scaleKm / g.circles));
+      if (ring >= g.circles) return null;
+      const bearing = ((Math.atan2(dx, dy) * 180 / Math.PI - g.rotation) % 360 + 360) % 360;
+      return Math.floor(bearing / (360 / g.sectors)) * g.circles + ring;
+    }
+    const segLabel = (sid, circles) => `S${Math.floor(sid / circles) + 1}R${sid % circles + 1}`;
+
+    // flattens any GeoJSON geometry into vertex lists
+    function lines(coords, out) {
+      if (typeof coords[0] === 'number') return out;
+      if (typeof coords[0][0] === 'number') { out.push(coords); return out; }
+      coords.forEach(c => lines(c, out));
+      return out;
+    }
+
+    function createSampler(ctx) {
+      const S = FRAME_CFG.step, ref = ctx.ref; // ref: fixed local projection origin (metres)
+      const kx = 111320 * Math.cos(ref.lat * Math.PI / 180), ky = 110540;
+      const toXY = (lat, lng) => [(lng - ref.lng) * kx, (lat - ref.lat) * ky];
+      const toLL = (xy) => ({ lat: ref.lat + xy[1] / ky, lng: ref.lng + xy[0] / kx });
+      const key = (x, y) => Math.floor(x / S) + ',' + Math.floor(y / S);
+
+      // Built once: footprint area per bin, PT-served bins, border edges.
+      let I = null;
+      function index() {
+        if (I) return I;
+        const bld = new Map(), floor = new Map(), pop = new Map(), edges = [];
+        ctx.cells().forEach(c => { const k = key(...toXY(c.lat, c.lng)); pop.set(k, (pop.get(k) || 0) + c.pop); });
+        const b = ctx.buildings();
+        (b ? b.features : []).forEach(f => {
+          const g = f.geometry;
+          const polys = !g ? [] : g.type === 'Polygon' ? [g.coordinates] : g.type === 'MultiPolygon' ? g.coordinates : [];
+          polys.forEach(poly => {
+            const p = poly[0].map(c => toXY(c[1], c[0]));
+            let a = 0, cx = 0, cy = 0;
+            for (let i = 0; i < p.length; i++) {
+              const q = p[(i + 1) % p.length];
+              a += p[i][0] * q[1] - q[0] * p[i][1]; cx += p[i][0]; cy += p[i][1];
+            }
+            const k = key(cx / p.length, cy / p.length), h = +(f.properties && (f.properties.h ?? f.properties.height)) || 0;
+            bld.set(k, (bld.get(k) || 0) + Math.abs(a) / 2);
+            floor.set(k, (floor.get(k) || 0) + Math.abs(a) / 2 * Math.max(1, Math.round(h / FRAME_CFG.storey)));
+          });
+        });
+        const bnd = ctx.boundary();
+        (bnd ? (bnd.features || [bnd]) : []).forEach(f => {
+          if (!f.geometry || f.geometry.type === 'Point') return;
+          lines(f.geometry.coordinates, []).forEach(l => {
+            for (let i = 1; i < l.length; i++) edges.push([toXY(l[i - 1][1], l[i - 1][0]), toXY(l[i][1], l[i][0])]);
+          });
+        });
+        return (I = { bld, floor, pop, edges });
+      }
+      // 100 m bins within stopRange of a stop; rebuilt only when the range changes
+      let served = null, servedRange = null;
+      function servedBins() {
+        if (servedRange === FRAME_CFG.stopRange) return served;
+        served = new Set(); servedRange = FRAME_CFG.stopRange;
+        const n = Math.ceil(servedRange / S);
+        ctx.stops().forEach(st => {
+          const [x, y] = toXY(st.lat, st.lng), bx = Math.floor(x / S), by = Math.floor(y / S);
+          for (let i = -n; i <= n; i++) for (let j = -n; j <= n; j++) {
+            if (Math.hypot(i, j) * S <= servedRange) served.add((bx + i) + ',' + (by + j));
+          }
+        });
+        return served;
+      }
+
+      // border edges near this city only: the Barcelona file also holds two other Barcelonas
+      const nearEdges = () => I.edges.filter(([a, b]) => Math.hypot(a[0], a[1]) < 50000 && Math.hypot(b[0], b[1]) < 50000);
+      const crossings = (edges, y) => edges.filter(([a, b]) => (a[1] > y) !== (b[1] > y))
+        .map(([a, b]) => a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+      function borderArea() {
+        index();
+        const near = nearEdges();
+        if (!near.length) return 0;
+        const ys = near.map(([a]) => a[1]);
+        let area = 0;
+        for (let y = Math.min(...ys) + S / 2; y < Math.max(...ys); y += S) {
+          const xs = crossings(near, y).sort((p, q) => p - q);
+          for (let i = 1; i < xs.length; i += 2) area += (xs[i] - xs[i - 1]) * S;
+        }
+        return area; // m2
+      }
+      // city mean per m2 inside the border (residents, floor area); computed once per quantity
+      const means = new Map();
+      function cityMean(bins) {
+        if (means.has(bins)) return means.get(bins);
+        const near = nearEdges(), rows = new Map();
+        let sum = 0;
+        bins.forEach((v, k) => {
+          const [i, j] = k.split(',').map(Number), x = (i + 0.5) * S;
+          if (!rows.has(j)) rows.set(j, crossings(near, (j + 0.5) * S));
+          if (!near.length || rows.get(j).filter(c => c < x).length % 2) sum += v;
+        });
+        const area = borderArea(), m = area ? sum / area : NaN;
+        means.set(bins, m);
+        return m;
+      }
+
+      let frame = new Map();    // sid -> lattice statistics and point pools
+      const points = new Map(); // sid -> random point, kept until Re-draw
+
+      function build(keepPoints) {
+        index();
+        const SV = servedBins();
+        const RE = [];  // ring-road polygon edges (local metres)
+        const rg = ctx.ring();
+        (rg ? (rg.features || [rg]) : []).forEach(f => f.geometry && lines(f.geometry.coordinates, []).forEach(l => {
+          for (let i = 1; i < l.length; i++) RE.push([toXY(l[i - 1][1], l[i - 1][0]), toXY(l[i][1], l[i][0])]);
+        }));
+        const g = ctx.grid(), hub = ctx.hub(), h = toXY(hub.lat, hub.lng), R = g.scaleKm * 1000;
+        const stats = new Map();
+        for (let j = Math.floor((h[1] - R) / S); j <= Math.floor((h[1] + R) / S); j++) {
+          const y = (j + 0.5) * S;
+          const xs = []; // border crossings of this lattice row (even-odd rule)
+          I.edges.forEach(([a, b]) => {
+            if ((a[1] > y) !== (b[1] > y)) xs.push(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+          });
+          const xr = crossings(RE, y);
+          for (let i = Math.floor((h[0] - R) / S); i <= Math.floor((h[0] + R) / S); i++) {
+            const x = (i + 0.5) * S, ll = toLL([x, y]);
+            const sid = segmentOf(ll.lat, ll.lng, hub, g);
+            if (sid === null) continue;
+            const st = stats.get(sid) || { n: 0, inside: 0, ring: 0, built: 0, served: 0, pop: 0, floor: 0, pts: [], popPts: [], all: [] };
+            const k = i + ',' + j;
+            st.n++; st.all.push([x, y]);
+            if (xr.filter(v => v < x).length % 2) st.ring++;
+            if (!I.edges.length || xs.filter(v => v < x).length % 2 === 1) {
+              st.inside++;
+              if ((I.bld.get(k) || 0) >= FRAME_CFG.binCoverage * S * S) { st.built++; st.pts.push([x, y]); }
+              if (SV.has(k)) st.served++;
+              st.floor += I.floor.get(k) || 0;
+              const pp = I.pop.get(k) || 0;
+              if (pp > 0) { st.pop += pp; st.popPts.push([x, y]); }
+            }
+            stats.set(sid, st);
+          }
+        }
+        frame = stats;
+        frame.hasRing = RE.length > 0;
+        if (!keepPoints) points.clear();
+      }
+
+      // Random lattice point on built-up land inside the border, jittered within its 100 m bin.
+      function randomPoint(sid) {
+        const st = frame.get(sid);
+        if (!st) return null;
+        const pool = [ctx.segType(sid) === 'residential' ? st.popPts : st.pts, st.pts, st.all].find(x => x.length);
+        const c = pool[Math.floor(Math.random() * pool.length)];
+        const ll = toLL([c[0] + (Math.random() - 0.5) * S, c[1] + (Math.random() - 0.5) * S]);
+        return segmentOf(ll.lat, ll.lng, ctx.hub(), ctx.grid()) === sid ? ll : toLL(c);
+      }
+      function pointFor(sid) {
+        if (!points.has(sid)) points.set(sid, randomPoint(sid));
+        return points.get(sid);
+      }
+
+      const group = L.layerGroup().addTo(ctx.map);
+      const R = (sid) => ctx.resolve(sid); // the segment this city uses for a pick
+      function render() {
+        group.clearLayers();
+        const c = FRAME_CFG.color, circles = ctx.grid().circles;
+        const oSid = R(OD_SEGS.origin), o = oSid === null ? null : pointFor(oSid);
+        [OD_SEGS.origin, ...OD_SEGS.dests].map(R).forEach(sid => {
+          if (sid !== null) L.polygon(ctx.segPoints(sid), { color: c, weight: 2, fill: false, pane: ctx.panes.routes, interactive: false }).addTo(group);
+        });
+        OD_SEGS.dests.forEach((pick, i) => {
+          const sid = R(pick), d = sid === null ? null : pointFor(sid);
+          if (!d) return;
+          if (o) {
+            L.polyline([o, d], { color: '#fff', weight: 5, opacity: 0.9, pane: ctx.panes.routes, interactive: false }).addTo(group);
+            L.polyline([o, d], { color: c, weight: 2, dashArray: '6,4', pane: ctx.panes.routes, interactive: false }).addTo(group);
+          }
+          L.marker(d, { pane: ctx.panes.markers, icon: L.divIcon({
+            className: 'center-icon', iconSize: [16, 16], iconAnchor: [8, 8],
+            html: `<div style="width:16px;height:16px;display:flex;align-items:center;justify-content:center;background:${c};color:#fff;font-weight:bold;font-size:9px;border:1px solid #fff;box-shadow:0 2px 3px rgba(0,0,0,.3);">${i + 1}</div>`
+          }) }).bindPopup(`D${i + 1}<br>Segment ${segLabel(sid, circles)}` + (sid !== pick ? `<br>nearest eligible for ${segLabel(pick, circles)}` : '')).addTo(group);
+        });
+        if (!o) return;
+        const sid = oSid, open = !OD_SEGS.fixed;
+        const om = L.marker(o, { pane: ctx.panes.markers, draggable: open, icon: L.divIcon({
+          className: (open ? 'origin-icon' : 'center-icon') + ' sampled-origin', iconSize: [18, 18], iconAnchor: [9, 9],
+          html: `<div style="width:18px;height:18px;box-sizing:border-box;border:3px solid ${c};border-radius:50%;background:${open ? '#fff' : c};box-shadow:0 1px 3px rgba(0,0,0,.3);"></div>`
+        }) }).bindPopup(`Origin<br>Segment ${segLabel(sid, circles)}${open ? '<br>Drag to adjust within the segment' : ''}`).addTo(group);
+        // Manual adjustment: the marker cannot leave its segment.
+        let last = om.getLatLng();
+        om.on('drag', () => {
+          const ll = om.getLatLng();
+          if (segmentOf(ll.lat, ll.lng, ctx.hub(), ctx.grid()) === sid) last = ll;
+          else om.setLatLng(last);
+        });
+        om.on('dragend', () => points.set(sid, { lat: last.lat, lng: last.lng, manual: true }));
+      }
+
+      return {
+        group, build, render,
+        inFrame: (sid) => ctx.frameSet().has(sid),
+        borderArea,
+        stat(sid) {
+          const st = frame.get(sid);
+          return st ? { inside: st.inside / st.n, built: st.built / st.inside, served: st.served / st.inside,
+                        ring: frame.hasRing ? st.ring / st.n : NaN,
+                        density: st.inside ? st.pop / (st.inside * S * S) / cityMean(I.pop) : 0,
+                        floor: st.inside ? st.floor / (st.inside * S * S) / cityMean(I.floor) : 0 } : null;
+        },
+        // eligibility gates, then segment type (see FRAME_CFG)
+        classify(sid) {
+          const st = this.stat(sid), pct = (v) => Math.round((v || 0) * 100) + '%';
+          if (!st || !(st.inside >= FRAME_CFG.minInside)) return { ok: false, why: `excluded at gate: within border ${pct(st && st.inside)}` };
+          if (!(st.floor >= FRAME_CFG.minFloor)) return { ok: false, why: `excluded at gate: built intensity ${pct(st.floor)} of city average` };
+          // optional gate: applies only in a city with a ring road (st.ring is NaN without one)
+          if (FRAME_CFG.minRing > 0 && !isNaN(st.ring) && !(st.ring >= FRAME_CFG.minRing))
+            return { ok: false, why: `excluded at gate: within ring road ${pct(st.ring)}` };
+          return { ok: true, type: st.density >= FRAME_CFG.minDensity ? 'residential' : 'non-residential' };
+        },
+        // Before the origin is fixed this redraws the origin; afterwards only destinations.
+        redraw() {
+          const oSid = R(OD_SEGS.origin), o = OD_SEGS.fixed ? points.get(oSid) : null;
+          points.clear();
+          if (o) points.set(oSid, o);
+          render();
+        },
+        forget: (sid) => points.delete(sid),
+        clearPoints: () => points.clear(),
+        export() {
+          const circles = ctx.grid().circles, pt = (pick) => {
+            const sid = R(pick);
+            return sid === null ? { picked: segLabel(pick, circles), segment: null }
+              : { picked: segLabel(pick, circles), segment: segLabel(sid, circles), type: ctx.segType(sid), ...pointFor(sid) };
+          };
+          return {
+            grid: ctx.grid(), hub: ctx.hub(), originFixed: OD_SEGS.fixed,
+            origin: OD_SEGS.origin === null ? null : pt(OD_SEGS.origin),
+            destinations: OD_SEGS.dests.map((sid, i) => ({ id: `D${i + 1}`, ...pt(sid) }))
+          };
+        }
+      };
+    }
+
+    // ---- Controls shared by both cities ----
+    function odRender(msg) {
+      Object.values(CITY_AUTO).forEach(c => { c.render(); c.ui(); c.info(msg); });
+    }
+    function odReset() {
+      Object.assign(OD_SEGS, { origin: null, fixed: false, dests: [] });
+      Object.values(CITY_AUTO).forEach(c => c.clearPoints());
+    }
+    // Each city has its own frame. A pick is a segment position (sector, ring); a city uses that
+    // segment if it is in its frame, otherwise the nearest segment of its frame in the same ring,
+    // at most FRAME_CFG.maxShift sectors away; null if there is none.
+    function resolveSeg(c, sid) {
+      if (sid === null || c.inFrame(sid)) return sid;
+      const { circles, sectors } = c.grid(), ring = sid % circles, sec = Math.floor(sid / circles);
+      let best = null, bd = Infinity;
+      for (let k = 0; k < sectors; k++) {
+        const d = Math.min(Math.abs(k - sec), sectors - Math.abs(k - sec));
+        if (d <= FRAME_CFG.maxShift && d < bd && c.inFrame(k * circles + ring)) { bd = d; best = k * circles + ring; }
+      }
+      return best;
+    }
+    function whyOut(c, sid) {
+      const r = c.classify(sid);
+      return r.ok ? 'removed manually' : r.why;
+    }
+    // Relative grids: each city's outer circle = radius of a circle with the city's border area.
+    function fitGrids() {
+      return 'Scale = equivalent radius of border area: ' + Object.values(CITY_AUTO).map(c => {
+        const a = c.borderArea();
+        if (!a) return `${c.name}: no border data`;
+        const km = Math.round(Math.sqrt(a / Math.PI) / 100) / 10;
+        c.setScale(km);
+        return `${c.name} ${km} km (${Math.round(a / 1e6)} km\u00b2)`;
+      }).join(', ') + '.';
+    }
+    // keep = only gates or ring road changed (grid unchanged): O/D picks that still qualify stay.
+    function buildFrames(from, msg, keep) {
+      CITY_AUTO[from].readCriteria(); // criteria apply to both cities
+      Object.values(CITY_AUTO).forEach(c => c.writeCriteria());
+      const g = CITY_AUTO[from].grid();
+      const hadOD = OD_SEGS.origin !== null;
+      if (!keep) odReset();
+      const cities = Object.values(CITY_AUTO);
+      cities.forEach(c => {
+        c.setCounts(g.circles, g.sectors); // segment indices must mean the same in both cities
+        c.build(keep);
+      });
+      // Each city's frame is decided by its own data only.
+      const n = g.circles * g.sectors;
+      cities.forEach(c => {
+        const types = new Map();
+        for (let sid = 0; sid < n; sid++) {
+          const r = c.classify(sid);
+          if (r.ok) types.set(sid, r.type);
+        }
+        c.setFrame(types);
+      });
+      const notes = [msg, !keep && hadOD ? 'O/D selection cleared.' : ''];
+      if (keep) {
+        const inF = (sid) => cities.every(c => resolveSeg(c, sid) !== null), lab = (sid) => segLabel(sid, g.circles);
+        const lost = [OD_SEGS.origin, ...OD_SEGS.dests].filter(sid => sid !== null && !inF(sid));
+        if (OD_SEGS.origin !== null && !inF(OD_SEGS.origin)) odReset();
+        else OD_SEGS.dests = OD_SEGS.dests.filter(inF);
+        if (lost.length) notes.push(`No longer in the frame: ${lost.map(lab).join(', ')}.`);
+      }
+      const noRing = cities.filter(c => !c.hasRing()).map(c => c.name);
+      if (FRAME_CFG.minRing > 0 && noRing.length) notes.push(`Ring road gate not applied in ${noRing.join(' and ')}: no ring road drawn.`);
+      OD_SEGS.picking = true; // go straight to picking
+      odRender(notes.filter(Boolean).join(' '));
+    }
+    // Fit, gates and ring road always (re)build the frame; grid sliders and the grid center
+    // rebuild it only once a frame exists, so the grid can be set up first.
+    function refreshFrame(from, msg, keep, gridOnly) {
+      if (gridOnly && !Object.values(CITY_AUTO).some(c => c.frameBuilt())) return;
+      Object.keys(CITY_AUTO).forEach(c => document.getElementById(`${c}-autoInfo`).textContent = 'Updating frame...');
+      setTimeout(() => buildFrames(from, msg + ' Frame updated.', keep), 30); // let the text repaint first
+    }
+    // Step 2 (origin not fixed): a click sets or moves the common origin segment.
+    // Step 3 (origin fixed): a click adds a destination segment, a second click removes it.
+    function odPick(sid) {
+      const cs = Object.values(CITY_AUTO), circles = cs[0].grid().circles, lab = (x) => segLabel(x, circles);
+      if (!cs.some(c => c.inFrame(sid)))
+        return odRender(`${lab(sid)} is not eligible in any city. ` + cs.map(c => `${c.name}: ${whyOut(c, sid)}`).join('; ') + '.');
+      const res = cs.map(c => [c, resolveSeg(c, sid)]);
+      const none = res.filter(([, r]) => r === null).map(([c]) => c.name);
+      if (none.length) return odRender(`${lab(sid)}: ${none.join(' and ')} has no eligible segment here or in the neighbouring sectors of this ring.`);
+      const removing = sid === OD_SEGS.origin || OD_SEGS.dests.includes(sid);
+      if (!removing) { // two picks must not fall into the same segment of a city
+        const clash = res.filter(([c, r]) => [OD_SEGS.fixed ? OD_SEGS.origin : null, ...OD_SEGS.dests]
+          .some(x => x !== null && resolveSeg(c, x) === r)).map(([c, r]) => `${c.name} ${lab(r)}`);
+        if (clash.length) return odRender(`Already used: ${clash.join(', ')}.`);
+      }
+      const subs = res.filter(([, r]) => r !== sid).map(([c, r]) => `${c.name} uses ${lab(r)} (${lab(sid)}: ${whyOut(c, sid)}).`).join(' ');
+      if (!OD_SEGS.fixed) {
+        if (OD_SEGS.origin !== null) cs.forEach(c => c.forget(resolveSeg(c, OD_SEGS.origin)));
+        OD_SEGS.origin = sid;
+      } else if (sid === OD_SEGS.origin) {
+        return odRender('This is the origin segment.');
+      } else if (OD_SEGS.dests.includes(sid)) {
+        OD_SEGS.dests = OD_SEGS.dests.filter(x => x !== sid);
+      } else {
+        OD_SEGS.dests.push(sid);
+      }
+      odRender(removing ? '' : subs);
+    }
   </script>
   <style>
     * { box-sizing: border-box; }
@@ -249,9 +632,13 @@
     button { width: 100%; padding: 4px 6px; border: 1px solid #e9b1ae; border-radius: 3px; cursor: pointer; margin-bottom: 0.4rem; font-weight: 500; font-size: 12px; color: #a8322e; background: #fcefee; box-shadow: 0 1px 1px rgba(0,0,0,0.08); }
     button:hover { background: #f8dedc; border-color: #df9995; }
     button:active { box-shadow: none; transform: translateY(1px); }
+    button:disabled, button:disabled:hover { opacity: 0.45; cursor: default; background: #fcefee; border-color: #e9b1ae; box-shadow: none; transform: none; }
     button.on { background: #eceef0; border-color: #4a5058; color: #2f3439; }   /* active mode: light graphite */
     .sidebar .sec { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #d9534f; border-top: 1px solid #eee; padding-top: 0.6rem; margin: 0.9rem 0 0.2rem; }
     .sidebar .val { font-size: 12px; color: #999; margin-bottom: 0.6rem; }
+    .sidebar .crit { display: grid; grid-template-columns: 1fr 56px; gap: 3px 6px; align-items: center; font-size: 12px; color: #666; margin: 0.2rem 0 0.5rem; }
+    .sidebar .crit input { margin: 0; padding: 2px 4px; text-align: right; }
+    .sidebar .sw { display: inline-block; width: 10px; height: 10px; margin: 0 4px 0 0; vertical-align: -1px; opacity: 0.55; }
     /* Fine sliders: thin track, small thumb */
     .sidebar input[type=range] { -webkit-appearance: none; appearance: none; height: 3px; padding: 0; border: none; border-radius: 2px; background: #e6e6e6; margin: 6px 0 0.4rem; }
     .sidebar input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 11px; height: 11px; border-radius: 50%; background: #d9534f; border: none; cursor: pointer; }
@@ -270,6 +657,7 @@
       background: transparent !important;
       border: none !important;
     }
+    [class*="-pick-pane"] path:focus { outline: none; } /* no focus box around a picked segment */
     .marker-icon, .origin-icon { cursor: grab !important; }
     .marker-icon:active, .origin-icon:active { cursor: grabbing !important; }
   </style>
@@ -286,7 +674,7 @@
       <div id="panel-bcn" class="tab-panel active">
         <div class="container">
           <div class="sidebar">
-            <h1>Barcelona OD Routes</h1>
+            <h1>Barcelona OD Routes <span style="font-size:11px; font-weight:500; color:#999;">v2 demo</span></h1>
 
             <div class="sec">Display</div>
             <label>Display mode:</label>
@@ -306,8 +694,9 @@
             <input type="range" id="bcn-sectors" min="8" max="24" step="2" value="12">
             <div class="val"><span id="bcn-sectors-val">12</span> divisions</div>
             <label>Scale (km):</label>
-            <input type="range" id="bcn-scale" min="2" max="20" value="10">
+            <input type="range" id="bcn-scale" min="2" max="20" step="0.1" value="10">
             <div class="val"><span id="bcn-scale-val">10</span> km</div>
+            <button id="bcn-autoFitBtn">Fit Scale to City Size</button>
             <label>Rotation:</label>
             <input type="range" id="bcn-rotation" min="0" max="360" value="0">
             <div class="val"><span id="bcn-rotation-val">0</span>°</div>
@@ -316,6 +705,33 @@
             <div class="sec">Routes</div>
             <button id="bcn-routeColorBtn">Routes: Black</button>
             <button id="bcn-resetDestinationsBtn">Reset All (Origin + Routes)</button>
+
+            <div class="sec">Sampling</div>
+            <label>Eligibility gates</label>
+            <div class="crit">
+              <span>Within city border &ge; %</span><input type="number" autocomplete="off" id="bcn-critInside" min="0" max="100" step="5">
+              <span>Built intensity &ge; % of city average</span><input type="number" autocomplete="off" id="bcn-critFloor" min="0" max="500" step="5">
+              <span>Within ring road &ge; %</span><input type="number" autocomplete="off" id="bcn-critRing" min="0" max="100" step="5" title="0 = off">
+            </div>
+            <button id="bcn-ringBtn">Draw Ring Road</button>
+            <button id="bcn-ringResetBtn">Reset Ring Road</button>
+            <button id="bcn-ringCopyBtn">Copy Ring Road as File</button>
+            <label>Residential segments</label>
+            <div class="crit">
+              <span>Population density at least % of city average</span><input type="number" autocomplete="off" id="bcn-critDensity" min="0" max="500" step="10">
+            </div>
+            <div class="val">Others are non-residential</div>
+            <div class="val"><span class="sw" style="background:#1e8449"></span>residential&nbsp;&nbsp; <span class="sw" style="background:#4a90c2"></span>non-residential</div>
+            <button id="bcn-autoFrameBtn">1. Build Sampling Frame</button>
+            <div class="val">The frame also updates by itself when you change the gates, the ring road or the grid.</div>
+            <button id="bcn-autoOriginBtn">2. Pick Common Origin Segment</button>
+            <button id="bcn-autoFixBtn">Fix Origin &rarr; Next</button>
+            <button id="bcn-autoDestBtn">3. Pick Destination Segments</button>
+            <button id="bcn-autoRedrawBtn">Re-draw Random Points</button>
+            <button id="bcn-autoClearBtn">Clear O/D Segments</button>
+            <button id="bcn-autoViewBtn">Show: Manual + Sampled</button>
+            <button id="bcn-autoCopyBtn">Copy Sampled OD (JSON)</button>
+            <div class="val" id="bcn-autoInfo" style="white-space:pre-line;">Set the grid, then build the sampling frame.</div>
 
             <div class="loading-note" id="bcn-loadingStatus">Loading data...</div>
           </div>
@@ -327,7 +743,7 @@
       <div id="panel-lj" class="tab-panel">
         <div class="container">
           <div class="sidebar">
-            <h1>Ljubljana OD Routes</h1>
+            <h1>Ljubljana OD Routes <span style="font-size:11px; font-weight:500; color:#999;">v2 demo</span></h1>
 
             <div class="sec">Display</div>
             <label>Display mode:</label>
@@ -347,8 +763,9 @@
             <input type="range" id="lj-sectors" min="8" max="24" step="2" value="12">
             <div class="val"><span id="lj-sectors-val">12</span> divisions</div>
             <label>Scale (km):</label>
-            <input type="range" id="lj-scale" min="2" max="20" value="10">
+            <input type="range" id="lj-scale" min="2" max="20" step="0.1" value="10">
             <div class="val"><span id="lj-scale-val">10</span> km</div>
+            <button id="lj-autoFitBtn">Fit Scale to City Size</button>
             <label>Rotation:</label>
             <input type="range" id="lj-rotation" min="0" max="360" value="0">
             <div class="val"><span id="lj-rotation-val">0</span>°</div>
@@ -357,6 +774,33 @@
             <div class="sec">Routes</div>
             <button id="lj-routeColorBtn">Routes: Black</button>
             <button id="lj-resetDestinationsBtn">Reset All (Origin + Routes)</button>
+
+            <div class="sec">Sampling</div>
+            <label>Eligibility gates</label>
+            <div class="crit">
+              <span>Within city border &ge; %</span><input type="number" autocomplete="off" id="lj-critInside" min="0" max="100" step="5">
+              <span>Built intensity &ge; % of city average</span><input type="number" autocomplete="off" id="lj-critFloor" min="0" max="500" step="5">
+              <span>Within ring road &ge; %</span><input type="number" autocomplete="off" id="lj-critRing" min="0" max="100" step="5" title="0 = off">
+            </div>
+            <button id="lj-ringBtn">Draw Ring Road</button>
+            <button id="lj-ringResetBtn">Reset Ring Road</button>
+            <button id="lj-ringCopyBtn">Copy Ring Road as File</button>
+            <label>Residential segments</label>
+            <div class="crit">
+              <span>Population density at least % of city average</span><input type="number" autocomplete="off" id="lj-critDensity" min="0" max="500" step="10">
+            </div>
+            <div class="val">Others are non-residential</div>
+            <div class="val"><span class="sw" style="background:#1e8449"></span>residential&nbsp;&nbsp; <span class="sw" style="background:#4a90c2"></span>non-residential</div>
+            <button id="lj-autoFrameBtn">1. Build Sampling Frame</button>
+            <div class="val">The frame also updates by itself when you change the gates, the ring road or the grid.</div>
+            <button id="lj-autoOriginBtn">2. Pick Common Origin Segment</button>
+            <button id="lj-autoFixBtn">Fix Origin &rarr; Next</button>
+            <button id="lj-autoDestBtn">3. Pick Destination Segments</button>
+            <button id="lj-autoRedrawBtn">Re-draw Random Points</button>
+            <button id="lj-autoClearBtn">Clear O/D Segments</button>
+            <button id="lj-autoViewBtn">Show: Manual + Sampled</button>
+            <button id="lj-autoCopyBtn">Copy Sampled OD (JSON)</button>
+            <div class="val" id="lj-autoInfo" style="white-space:pre-line;">Set the grid, then build the sampling frame.</div>
 
             <div class="loading-note" id="lj-loadingStatus">Loading data...</div>
           </div>
@@ -673,6 +1117,7 @@
       }
 
       // ---- Load boundaries from global variables ----
+      let boundaryGeo = null; // reused by the segment sampler
       const boundaryVar = cfg.boundaryVar;
       if (boundaryVar) {
         let boundaryData = safeGlobal(boundaryVar);
@@ -702,6 +1147,7 @@
                 fillOpacity: 0.15
               }
             }).addTo(boundariesLayer);
+            boundaryGeo = boundaryData;
             console.log('Boundary rendered successfully');
             parts.push('boundary');
           } catch (err) {
@@ -822,17 +1268,44 @@
       let adjustingGrid = false;
       const selectedSegments = new Set();
 
+      // Sampling frame state: while a frame is shown the dashed grid is hidden.
+      let frameActive = false;
+      let frameBuilt = false; // once built, the frame follows every change
+      let segTypes = new Map(); // sid -> 'residential' | 'non-residential'
+      const FRAME_STYLE = {
+        'residential': { color: '#1e8449', fillColor: '#1e8449', fillOpacity: 0.3 },
+        'non-residential': { color: '#2e6fa8', fillColor: '#4a90c2', fillOpacity: 0.3 }
+      };
+
+      // Polygon of one grid segment; used by drawGrid() and the segment sampler.
+      function segmentPoints(sector, ring) {
+        const circles = +el('circles').value, sectors = +el('sectors').value;
+        const scaleKm = +el('scale').value, rotation = +el('rotation').value;
+        const r1 = (scaleKm / circles) * ring / 111, r2 = (scaleKm / circles) * (ring + 1) / 111;
+        const a1 = (360 / sectors) * sector + rotation, a2 = (360 / sectors) * (sector + 1) + rotation;
+        const at = (r, a) => ({
+          lat: gridCenter.lat + r * Math.cos(a * Math.PI / 180),
+          lng: gridCenter.lng + r / Math.cos(gridCenter.lat * Math.PI / 180) * Math.sin(a * Math.PI / 180)
+        });
+        const pts = [];
+        if (ring === 0) pts.push(gridCenter);
+        else for (let a = a1; a <= a2; a += 2) pts.push(at(r1, a));
+        for (let a = a2; a >= a1; a -= 2) pts.push(at(r2, a));
+        return pts;
+      }
+
       function drawGrid() {
         gridGroup.clearLayers();
         segmentLayer.clearLayers();
         const circles = parseInt(el('circles').value);
         const sectors = parseInt(el('sectors').value);
-        const scaleKm = parseInt(el('scale').value);
+        const scaleKm = parseFloat(el('scale').value);
         const rotation = parseInt(el('rotation').value);
         let segId = 0;
+        const gridLines = !frameActive || adjustingGrid;
 
         // Draw concentric circles
-        for (let i = 1; i <= circles; i++) {
+        for (let i = 1; i <= circles && gridLines; i++) {
           L.circle(gridCenter, {
             radius: (scaleKm / circles) * i * 1000,
             fill: false, color: '#222', weight: 1, dashArray: '4,4', pane: id('grid')
@@ -848,51 +1321,23 @@
           const destLng = gridCenter.lng + dist / Math.cos(gridCenter.lat * Math.PI / 180) * Math.sin(rad);
           
           // Draw radial line
-          L.polyline([gridCenter, { lat: destLat, lng: destLng }], {
+          if (gridLines) L.polyline([gridCenter, { lat: destLat, lng: destLng }], {
             color: '#444', weight: 0.7, dashArray: '3,3', pane: id('grid')
           }).addTo(gridGroup);
 
           // Create clickable segments (one per ring in this sector)
           for (let ring = 0; ring < circles; ring++) {
-            const r1 = ring === 0 ? 0 : (scaleKm / circles) * ring / 111;
-            const r2 = (scaleKm / circles) * (ring + 1) / 111;
-            const angle1 = (360 / sectors) * i + rotation;
-            const angle2 = (360 / sectors) * (i + 1) + rotation;
-            const rad1 = angle1 * Math.PI / 180;
-            const rad2 = angle2 * Math.PI / 180;
-            
             const isSelected = selectedSegments.has(segId);
-            const segPoints = [];
-            
-            // Inner arc or center point
-            if (ring === 0) {
-              segPoints.push(gridCenter);
-            } else {
-              for (let a = angle1; a <= angle2; a += 2) {
-                const rad = a * Math.PI / 180;
-                segPoints.push({
-                  lat: gridCenter.lat + r1 * Math.cos(rad),
-                  lng: gridCenter.lng + r1 / Math.cos(gridCenter.lat * Math.PI / 180) * Math.sin(rad)
-                });
-              }
-            }
-            
-            // Outer arc (backwards)
-            for (let a = angle2; a >= angle1; a -= 2) {
-              const rad = a * Math.PI / 180;
-              segPoints.push({
-                lat: gridCenter.lat + r2 * Math.cos(rad),
-                lng: gridCenter.lng + r2 / Math.cos(gridCenter.lat * Math.PI / 180) * Math.sin(rad)
-              });
-            }
-            
+            const segPoints = segmentPoints(i, ring);
+
             if (adjustingGrid || isSelected) {
               const seg = L.polygon(segPoints, {
                 color: isSelected ? '#27ae60' : '#aaa',
                 fillColor: isSelected ? '#2ecc71' : '#bbb',
                 fillOpacity: isSelected ? 0.15 : 0.3,
                 weight: 0.5,
-                interactive: adjustingGrid
+                interactive: adjustingGrid,
+                ...(isSelected && FRAME_STYLE[segTypes.get(segId)])
               });
               
               if (adjustingGrid) {
@@ -904,6 +1349,7 @@
                   } else {
                     selectedSegments.add(cid);
                   }
+                  if (frameActive) odRender(); // picks may now resolve to other segments
                   drawGrid();
                 });
               }
@@ -1005,6 +1451,7 @@
           el('setGridCenterBtn').classList.remove('on');
           map.dragging.enable();
           update();
+          if (CITY_AUTO[p]) refreshFrame(p, 'Grid center changed.', false, true);
         }
       });
 
@@ -1095,12 +1542,259 @@
       el('gridCenterDisplay').textContent = `${gridCenter.lat.toFixed(4)}°, ${gridCenter.lng.toFixed(4)}°`;
       update();
 
+      // ---- Ring road: area enclosed by the outer ring road ----
+      // Source: a polygon drawn here (kept in this browser) or the optional file
+      // <city>_ring_road.js. "Copy Ring Road as File" turns a drawing into that file.
+      const ringKey = 'gridtool-ring-' + p;
+      let ringGeo = null;
+      try { ringGeo = JSON.parse(localStorage.getItem(ringKey)); } catch (e) { /* no storage */ }
+      if (!ringGeo) ringGeo = safeGlobal(cfg.ringVar) || null;
+      const ringLayer = L.layerGroup().addTo(map); // not in the layers control: addOverlay would rebuild it and drop the Population radios
+      function drawRing() {
+        ringLayer.clearLayers();
+        if (ringGeo) L.geoJSON(ringGeo, { interactive: false, pane: id('routes'),
+          style: { color: '#555', weight: 2, dashArray: '8,5', fill: false } }).addTo(ringLayer);
+      }
+      drawRing();
+
+      // drawing: a transparent layer above everything catches clicks (layers below open popups)
+      map.createPane(id('draw')).style.zIndex = 650;
+      const catcher = L.rectangle([[-85, -179], [85, 179]], { pane: id('draw'), stroke: false, fillOpacity: 0 });
+      const draft = L.layerGroup().addTo(map);
+      let drawing = null; // vertices while drawing
+      function drawDraft() {
+        draft.clearLayers();
+        if (drawing.length > 1) L.polygon(drawing, { pane: id('routes'), color: '#555', weight: 2, dashArray: '4,4', fillOpacity: 0.05, interactive: false }).addTo(draft);
+        drawing.forEach(ll => L.circleMarker(ll, { pane: id('routes'), radius: 3, color: '#555', weight: 1, fillOpacity: 1, interactive: false }).addTo(draft));
+        el('ringBtn').textContent = `Finish Ring Road (${drawing.length} points)`;
+      }
+      catcher.on('click', (e) => { drawing.push(e.latlng); drawDraft(); });
+      catcher.on('contextmenu', (e) => { L.DomEvent.preventDefault(e.originalEvent); drawing.pop(); drawDraft(); }); // right-click: undo
+      el('ringBtn').addEventListener('click', () => {
+        if (!drawing) {
+          drawing = [];
+          OD_SEGS.picking = false; odRender('Click along the ring road, right-click to undo, then Finish.');
+          catcher.addTo(map); el('ringBtn').classList.add('on'); drawDraft();
+          el('ringResetBtn').textContent = 'Cancel Drawing';
+          return;
+        }
+        stopDrawing();
+        if (drawing.length >= 3) {
+          const c = drawing.map(ll => [+ll.lng.toFixed(6), +ll.lat.toFixed(6)]);
+          ringGeo = { type: 'FeatureCollection', features: [{ type: 'Feature', properties: { name: cfg.name + ' ring road area' },
+            geometry: { type: 'Polygon', coordinates: [[...c, c[0]]] } }] };
+          try { localStorage.setItem(ringKey, JSON.stringify(ringGeo)); } catch (e) { /* not kept */ }
+          drawRing();
+          refreshFrame(p, `Ring road saved (${cfg.name}).`, true);
+        } else {
+          CITY_AUTO[p].info('Ring road not changed (fewer than 3 points).');
+        }
+        drawing = null;
+      });
+      function stopDrawing() {
+        map.removeLayer(catcher); draft.clearLayers(); el('ringBtn').classList.remove('on');
+        el('ringBtn').textContent = 'Draw Ring Road';
+        el('ringResetBtn').textContent = 'Reset Ring Road';
+      }
+      // While drawing: cancel the drawing. Otherwise: delete the drawn ring; a saved file ring, if any, applies again.
+      el('ringResetBtn').addEventListener('click', () => {
+        if (drawing) { stopDrawing(); drawing = null; return CITY_AUTO[p].info('Drawing cancelled; ring road unchanged.'); }
+        try { localStorage.removeItem(ringKey); } catch (e) { /* no storage */ }
+        ringGeo = safeGlobal(cfg.ringVar) || null;
+        drawRing();
+        refreshFrame(p, ringGeo ? `Ring road reset to the saved file (${cfg.name}).` : `Ring road removed (${cfg.name}).`, true);
+      });
+      el('ringCopyBtn').addEventListener('click', () => {
+        if (!ringGeo) return CITY_AUTO[p].info('No ring road yet: draw one first.');
+        const txt = `// ${cfg.name}: area enclosed by the outer ring road (GRID tool)\nconst ${cfg.ringVar} = ${JSON.stringify(ringGeo)};\n`;
+        if (navigator.clipboard) navigator.clipboard.writeText(txt).then(() =>
+          CITY_AUTO[p].info(`Copied. Save it as ${p}_ring_road.js next to this HTML file.`)).catch(() => {});
+      });
+
+      // ---- Segment sampling (separate layer; manual origin/routes untouched) ----
+      const grid = () => ({ circles: +el('circles').value, sectors: +el('sectors').value, scaleKm: +el('scale').value, rotation: +el('rotation').value });
+      const sampler = createSampler({
+        map, ref: cfg.gridCenter,
+        panes: { routes: id('routes'), markers: id('markers') },
+        hub: () => gridCenter, grid,
+        frameSet: () => selectedSegments,
+        resolve: (sid) => resolveSeg(CITY_AUTO[p], sid),
+        segType: (sid) => segTypes.get(sid) || 'manual',
+        cells: () => {
+          if (p === 'lj' && typeof LJ_POPULATION_DENSITY !== 'undefined') {
+            return LJ_POPULATION_DENSITY.features
+              .filter(f => f.properties.pop > 0 && !isCollectiveCell(f.properties.id))
+              .map(f => {
+                const g = f.geometry, r = (g.type === 'Polygon' ? g.coordinates[0] : g.coordinates[0][0]).slice(0, -1);
+                return { lat: r.reduce((a, c) => a + c[1], 0) / r.length, lng: r.reduce((a, c) => a + c[0], 0) / r.length, pop: f.properties.pop };
+              });
+          }
+          if (p === 'bcn' && typeof barcelonaPopulation !== 'undefined') {
+            return barcelonaPopulation.filter(r => r[4] > 0)
+              .map(r => ({ lat: (r[0][0] + r[2][0]) / 2, lng: (r[0][1] + r[2][1]) / 2, pop: r[4] }));
+          }
+          return [];
+        },
+        segPoints: (sid) => segmentPoints(Math.floor(sid / grid().circles), sid % grid().circles),
+        stops: () => {
+          const sd = cfg.transit && safeGlobal(cfg.transit.stopsVar);
+          return sd ? sd.features.filter(f => f.geometry && f.geometry.type === 'Point')
+            .map(f => ({ lat: f.geometry.coordinates[1], lng: f.geometry.coordinates[0] })) : [];
+        },
+        buildings: () => buildingsData,
+        boundary: () => boundaryGeo,
+        ring: () => ringGeo
+      });
+
+      // sidebar input id -> [FRAME_CFG key, scale]
+      const CRIT = { critInside: ['minInside', 100], critFloor: ['minFloor', 100], critRing: ['minRing', 100], critDensity: ['minDensity', 100] };
+      CITY_AUTO[p] = {
+        ...sampler, name: cfg.name, grid,
+        readCriteria() {
+          Object.entries(CRIT).forEach(([k, [key, f]]) => {
+            const v = parseFloat(el(k).value);
+            if (isFinite(v)) FRAME_CFG[key] = v / f;
+          });
+        },
+        writeCriteria() {
+          Object.entries(CRIT).forEach(([k, [key, f]]) => { el(k).value = Math.round(FRAME_CFG[key] * f); });
+        },
+        frameBuilt: () => frameBuilt,
+        hasRing: () => !!ringGeo,
+        setFrame(types) {
+          frameBuilt = true;
+          segTypes = types;
+          selectedSegments.clear();
+          types.forEach((t, sid) => selectedSegments.add(sid));
+          frameActive = true;
+          drawGrid();
+        },
+        setScale(km) { el('scale').value = km; el('scale').dispatchEvent(new Event('input')); },
+        setCounts(c, s) {
+          if (+el('circles').value === c && +el('sectors').value === s) return;
+          el('circles').value = c; el('sectors').value = s;
+          el('sectors').dispatchEvent(new Event('input')); // redraws grid, labels and slider fill
+        },
+        info(msg) {
+          const g = grid(), lab = (sid) => segLabel(sid, g.circles);
+          el('autoInfo').textContent = [
+            frameActive ? `Frame: ${selectedSegments.size} of ${g.circles * g.sectors} segments (${[...segTypes.values()].filter(t => t === 'residential').length} residential)` : 'Frame not built yet.',
+            `O: ${OD_SEGS.origin === null ? '-' : lab(OD_SEGS.origin)}`,
+            `D: ${OD_SEGS.dests.map(lab).join(', ') || '-'}`,
+            msg || (!frameActive ? 'Step 1: set the gates (and ring road), then Build Sampling Frame.'
+              : !OD_SEGS.fixed ? 'Step 2: click the common origin segment, drag the origin within it if needed, then Fix Origin.'
+              : 'Step 3: click destination segments (click again to remove).')
+          ].join('\n');
+        }
+      };
+
+      CITY_AUTO[p].writeCriteria();
+      // while a grid slider moves, show the dashed grid; on release the frame is rebuilt
+      ['circles', 'sectors', 'scale', 'rotation'].forEach(k => {
+        el(k).addEventListener('input', () => {
+          if (!frameActive) return;
+          frameActive = false; drawGrid();
+          OD_SEGS.picking = false;
+        });
+        el(k).addEventListener('change', () => refreshFrame(p, 'Grid changed.', false, true));
+      });
+      Object.keys(CRIT).forEach(k => el(k).addEventListener('change', () => refreshFrame(p, 'Criteria changed.', true)));
+      el('autoFrameBtn').addEventListener('click', () => {
+        Object.keys(CITY_AUTO).forEach(c => document.getElementById(`${c}-autoInfo`).textContent = 'Computing...');
+        setTimeout(() => buildFrames(p), 30); // let the text repaint first
+      });
+      el('autoFitBtn').addEventListener('click', () => refreshFrame(p, fitGrids()));
+
+      // Picking uses its own clickable segment layer above the thematic layers:
+      // density cells, stops and traffic lines open popups and swallow map clicks.
+      map.createPane(id('pick')).style.zIndex = 450;
+      const pickLayer = L.layerGroup().addTo(map);
+      function drawPickLayer() {
+        pickLayer.clearLayers();
+        if (!OD_SEGS.picking || !selectedSegments.size) return;
+        const { circles, sectors } = grid();
+        // every segment is clickable while picking: no popups underneath, and a
+        // segment outside a frame gets a message instead of a silent miss
+        for (let sid = 0; sid < circles * sectors; sid++) {
+          const poly = L.polygon(segmentPoints(Math.floor(sid / circles), sid % circles),
+            { pane: id('pick'), stroke: false, fillColor: FRAME_CFG.color, fillOpacity: 0 });
+          const me = CITY_AUTO[p], st = me.stat(sid), pct = (v) => Math.round((v || 0) * 100) + '%', lab = (x) => segLabel(x, circles);
+          // how the other city would serve a pick of this segment
+          const others = Object.values(CITY_AUTO).filter(c => c !== me).map(c => {
+            const r = resolveSeg(c, sid);
+            return r === sid ? '' : `<br>${c.name}: ${whyOut(c, sid)}, ` + (r === null ? 'no eligible neighbour, cannot be picked' : `uses ${lab(r)}`);
+          }).join('');
+          if (!me.inFrame(sid)) {
+            // outside this city's frame: invisible, the tooltip explains
+            const r = resolveSeg(me, sid);
+            poly.bindTooltip(`<b>${lab(sid)}</b> not eligible here: ${whyOut(me, sid)}` +
+              (Object.values(CITY_AUTO).some(c => c.inFrame(sid)) && r !== null ? `<br>a pick here uses ${lab(r)}` : '') + others, { sticky: true });
+          } else {
+            poly.bindTooltip(`<b>${lab(sid)}</b> ${segTypes.get(sid) || 'manual'}` + (st ?
+              `<br>Gates: within border ${pct(st.inside)}, built intensity ${pct(st.floor)}` + (isNaN(st.ring) ? '' : `, within ring road ${pct(st.ring)}`) +
+              `<br>Type: population density ${pct(st.density)} of city average<br>Orientation: near PT ${pct(st.served)}` : '') + others, { sticky: true });
+            poly.on('mouseover', () => poly.setStyle({ fillOpacity: 0.2 }));
+            poly.on('mouseout', () => poly.setStyle({ fillOpacity: 0 }));
+          }
+          poly.on('click', (e) => { L.DomEvent.stopPropagation(e); odPick(sid); });
+          pickLayer.addLayer(poly);
+        }
+      }
+      // Step buttons reflect the shared state; the active step button toggles picking
+      // off and on (e.g. to inspect layer popups underneath).
+      CITY_AUTO[p].ui = () => {
+        const framed = selectedSegments.size > 0;
+        el('autoOriginBtn').disabled = !framed || OD_SEGS.fixed;
+        el('autoFixBtn').disabled = OD_SEGS.origin === null || OD_SEGS.fixed;
+        el('autoFixBtn').innerHTML = OD_SEGS.fixed ? 'Origin Fixed' : 'Fix Origin &rarr; Next';
+        el('autoDestBtn').disabled = !OD_SEGS.fixed;
+        el('autoOriginBtn').classList.toggle('on', OD_SEGS.picking && framed && !OD_SEGS.fixed);
+        el('autoDestBtn').classList.toggle('on', OD_SEGS.picking && OD_SEGS.fixed);
+        drawPickLayer();
+      };
+      const togglePicking = () => { OD_SEGS.picking = !OD_SEGS.picking; odRender(); };
+      el('autoOriginBtn').addEventListener('click', togglePicking);
+      el('autoDestBtn').addEventListener('click', togglePicking);
+      el('autoFixBtn').addEventListener('click', () => {
+        OD_SEGS.fixed = true; OD_SEGS.picking = true; // go straight to step 3
+        odRender();
+      });
+      // other map modes switch picking off
+      ['setGridCenterBtn', 'adjustGridBtn'].forEach(b => el(b).addEventListener('click', () => {
+        if (OD_SEGS.picking) { OD_SEGS.picking = false; odRender(); }
+      }));
+
+      el('autoRedrawBtn').addEventListener('click', () => Object.values(CITY_AUTO).forEach(c => c.redraw()));
+      el('autoClearBtn').addEventListener('click', () => { odReset(); OD_SEGS.picking = selectedSegments.size > 0; odRender(); });
+      CITY_AUTO[p].ui();
+
+      const views = { both: 'Show: Manual + Sampled', auto: 'Show: Sampled only', manual: 'Show: Manual only' };
+      let view = 'both';
+      el('autoViewBtn').addEventListener('click', () => {
+        view = { both: 'auto', auto: 'manual', manual: 'both' }[view];
+        [routeGroup, markerGroup].forEach(g => { if (view === 'auto') map.removeLayer(g); else map.addLayer(g); });
+        if (view === 'manual') map.removeLayer(sampler.group); else map.addLayer(sampler.group);
+        el('autoViewBtn').textContent = views[view];
+      });
+
+      el('autoCopyBtn').addEventListener('click', () => {
+        const out = {};
+        Object.keys(CITY_AUTO).forEach(c => out[c] = CITY_AUTO[c].export());
+        const txt = JSON.stringify(out, null, 1);
+        console.log(txt);
+        if (navigator.clipboard) navigator.clipboard.writeText(txt).then(() => {
+          el('autoCopyBtn').textContent = 'Copied';
+          setTimeout(() => el('autoCopyBtn').textContent = 'Copy Sampled OD (JSON)', 1200);
+        }).catch(() => {});
+      });
+
       return map;
     }
 
     // ==================== BARCELONA ====================
     const bcnMap = initCityMap({
       prefix: 'bcn',
+      name: 'Barcelona',
       origin: { lat: 41.35716798139434, lng: 2.117563816738617 },
       destinations: [
         { lat: 41.39349087656098, lng: 2.10433505742488 },
@@ -1131,6 +1825,7 @@
       buildingsFile: 'bcn-eubucco.js',
       boundaryVar: 'barcelonaBoundaryData',
       boundaryFile: 'barcelona_boundary_FIXED.js',
+      ringVar: 'bcnRingRoad',
       trafficVar: 'bcnTrafficPeak',
       trafficLabel: 'Traffic: Tue afternoon peak (20 Oct 2026, 15:45)'
     });
@@ -1138,6 +1833,7 @@
     // ==================== LJUBLJANA ====================
     const ljMap = initCityMap({
       prefix: 'lj',
+      name: 'Ljubljana',
       origin: { lat: 46.04075648592688, lng: 14.467694364503426 },
       destinations: [
         { lat: 46.07694851115498, lng: 14.453649097950477 },
@@ -1168,6 +1864,7 @@
       buildingsFile: 'lj-eubucco.js',
       boundaryVar: 'mejaLjData',
       boundaryFile: 'meja_lj_FIXED.js',
+      ringVar: 'ljRingRoad',
       trafficVar: 'ljTrafficPeak',
       trafficLabel: 'Traffic: Tue afternoon peak (20 Oct 2026, 15:31)'
     });
